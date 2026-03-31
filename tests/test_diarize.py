@@ -1,5 +1,6 @@
+import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 import pytest
 
 
@@ -39,6 +40,7 @@ def test_pyannote_backend_returns_tuples(tmp_path):
     mock_waveform = MagicMock()
     mock_sample_rate = 16000
 
+    from unittest.mock import patch
     with patch("transcribee.diarize._load_pyannote_pipeline", return_value=mock_pipeline), \
          patch("torchaudio.load", return_value=(mock_waveform, mock_sample_rate)):
         from transcribee.diarize import run
@@ -51,29 +53,33 @@ def test_pyannote_backend_returns_tuples(tmp_path):
     assert isinstance(speaker, str)
 
 
-def test_resemblyzer_backend_returns_tuples(tmp_path):
+def test_resemblyzer_backend_returns_tuples(tmp_path, monkeypatch):
     """resemblyzer backend returns list of (float, float, str) tuples."""
+    import numpy as np
+
     wav = tmp_path / "audio.wav"
     wav.write_bytes(b"")
-
-    import numpy as np
 
     mock_preprocessed = np.zeros(48000, dtype=np.float32)  # 3s at 16kHz — fits 1.5s windows
     mock_encoder = MagicMock()
     mock_encoder.embed_utterance.return_value = np.random.rand(256)
-
     mock_labels = np.array([0, 0, 1, 1])
 
-    with patch("resemblyzer.preprocess_wav", return_value=mock_preprocessed), \
-         patch("resemblyzer.VoiceEncoder", return_value=mock_encoder), \
-         patch("sklearn.cluster.AgglomerativeClustering") as mock_cluster_cls:
+    mock_resemblyzer = MagicMock()
+    mock_resemblyzer.preprocess_wav.return_value = mock_preprocessed
+    mock_resemblyzer.VoiceEncoder.return_value = mock_encoder
 
-        mock_cluster = MagicMock()
-        mock_cluster.fit_predict.return_value = mock_labels
-        mock_cluster_cls.return_value = mock_cluster
+    mock_cluster = MagicMock()
+    mock_cluster.fit_predict.return_value = mock_labels
+    mock_sklearn_cluster = MagicMock()
+    mock_sklearn_cluster.AgglomerativeClustering.return_value = mock_cluster
 
-        from transcribee.diarize import run
-        result = run(wav, backend="resemblyzer", num_speakers=2)
+    monkeypatch.setitem(sys.modules, "resemblyzer", mock_resemblyzer)
+    monkeypatch.setitem(sys.modules, "sklearn", MagicMock())
+    monkeypatch.setitem(sys.modules, "sklearn.cluster", mock_sklearn_cluster)
+
+    from transcribee.diarize import run
+    result = run(wav, backend="resemblyzer", num_speakers=2)
 
     assert len(result) > 0
     for start, end, speaker in result:

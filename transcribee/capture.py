@@ -46,7 +46,11 @@ def record(
     if pid_file is not None:
         Path(pid_file).write_text(str(proc.pid))
 
-    _, stderr = proc.communicate()
+    try:
+        _, stderr = proc.communicate()
+    except KeyboardInterrupt:
+        proc.wait()
+        raise
 
     if proc.returncode != 0:
         stderr_text = stderr.decode("utf-8", errors="replace")

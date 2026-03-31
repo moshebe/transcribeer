@@ -11,6 +11,13 @@ dependencies = [
     "requests",
 ]
 
+[project.optional-dependencies]
+openai = ["openai>=1"]
+anthropic = ["anthropic>=0.25"]
+resemblyzer = ["resemblyzer", "scikit-learn"]
+pyannote = ["pyannote.audio"]
+dev = ["pytest", "openai>=1", "anthropic>=0.25", "resemblyzer", "scikit-learn"]
+
 [project.scripts]
 transcribee = "transcribee.cli:app"
 

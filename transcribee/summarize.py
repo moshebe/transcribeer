@@ -58,8 +58,9 @@ def _run_anthropic(transcript: str, model: str) -> str:
     response = client.messages.create(
         model=model,
         max_tokens=1024,
+        system=SYSTEM_PROMPT,
         messages=[
-            {"role": "user", "content": f"{SYSTEM_PROMPT}\n\n{transcript}"},
+            {"role": "user", "content": transcript},
         ],
     )
     return response.content[0].text

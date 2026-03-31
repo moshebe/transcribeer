@@ -39,7 +39,7 @@ def latest_session(sessions_dir: Path | None = None) -> Path | None:
 
     dirs = sorted(
         (d for d in sessions_dir.iterdir() if d.is_dir()),
-        key=lambda d: d.stat().st_ctime,
+        key=lambda d: d.stat().st_ctime,  # st_ctime = creation time on macOS
         reverse=True,
     )
     return dirs[0] if dirs else None

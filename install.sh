@@ -88,6 +88,7 @@ case "$(echo "$diar_choice" | tr '[:lower:]' '[:upper:]')" in
     read -r -p "  Paste your HF token: " hf_token
     mkdir -p "$HOME/.cache/huggingface"
     echo "$hf_token" > "$HOME/.cache/huggingface/token"
+    chmod 600 "$HOME/.cache/huggingface/token"
     # Validate
     http_code=$(curl -sf -o /dev/null -w "%{http_code}" \
       -H "Authorization: Bearer $hf_token" \
@@ -145,7 +146,12 @@ ln -sf "$VENV/bin/transcribee" "$LOCAL_BIN/transcribee"
 ok "Symlink: $LOCAL_BIN/transcribee → $VENV/bin/transcribee"
 
 if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
-  SHELL_RC="$HOME/.zshrc"
+  case "$SHELL" in
+    */zsh)  SHELL_RC="$HOME/.zshrc" ;;
+    */bash) SHELL_RC="$HOME/.bashrc" ;;
+    */fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
+    *)      SHELL_RC="$HOME/.profile" ;;
+  esac
   echo "" >> "$SHELL_RC"
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
   echo ""

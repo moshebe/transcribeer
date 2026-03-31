@@ -1,20 +1,21 @@
-import os
+import sys
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 
 def test_openai_backend_returns_string(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "## Summary\nTest summary."
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
 
-    with patch("openai.OpenAI") as mock_cls:
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_response
-        mock_cls.return_value = mock_client
+    mock_openai = MagicMock()
+    mock_openai.OpenAI.return_value = mock_client
+    monkeypatch.setitem(sys.modules, "openai", mock_openai)
 
-        from transcribee.summarize import run
-        result = run("Speaker 1: hello", backend="openai", model="gpt-4o-mini")
+    from transcribee.summarize import run
+    result = run("Speaker 1: hello", backend="openai", model="gpt-4o-mini")
 
     assert "Summary" in result
     mock_client.chat.completions.create.assert_called_once()
@@ -24,14 +25,15 @@ def test_anthropic_backend_returns_string(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     mock_response = MagicMock()
     mock_response.content[0].text = "## Summary\nTest."
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
 
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_client = MagicMock()
-        mock_client.messages.create.return_value = mock_response
-        mock_cls.return_value = mock_client
+    mock_anthropic = MagicMock()
+    mock_anthropic.Anthropic.return_value = mock_client
+    monkeypatch.setitem(sys.modules, "anthropic", mock_anthropic)
 
-        from transcribee.summarize import run
-        result = run("Speaker 1: hello", backend="anthropic", model="claude-3-5-haiku-20241022")
+    from transcribee.summarize import run
+    result = run("Speaker 1: hello", backend="anthropic", model="claude-3-5-haiku-20241022")
 
     assert isinstance(result, str)
     assert len(result) > 0
@@ -42,6 +44,7 @@ def test_ollama_backend_returns_string():
     mock_resp.json.return_value = {"message": {"content": "## Summary\nOllama result."}}
     mock_resp.raise_for_status = MagicMock()
 
+    from unittest.mock import patch
     with patch("requests.post", return_value=mock_resp):
         from transcribee.summarize import run
         result = run(
@@ -81,6 +84,7 @@ def test_prompt_contains_transcript():
     mock_resp.raise_for_status = MagicMock()
     transcript = "Speaker 1: unique_marker_xyz"
 
+    from unittest.mock import patch
     with patch("requests.post", return_value=mock_resp) as mock_post:
         from transcribee.summarize import run
         run(transcript, backend="ollama", model="llama3")

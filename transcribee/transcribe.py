@@ -10,6 +10,7 @@ def ensure_wav(audio_path: Path) -> Path:
         return audio_path
     wav_path = audio_path.with_suffix(".wav")
     if wav_path.exists():
+        print(f"Using existing WAV: {wav_path}")
         return wav_path
     subprocess.run(
         ["ffmpeg", "-i", str(audio_path), "-ar", "16000", "-ac", "1",
