@@ -7,12 +7,17 @@ import SwiftUI
 @main
 struct TranscribeeMenuBarApp: App {
     @StateObject private var runner = TranscribeeRunner()
+    @StateObject private var watcher = AppWatcher()
 
     var body: some Scene {
         MenuBarExtra("Transcribee", systemImage: "mic") {
             MenuBarView()
                 .environmentObject(runner)
-                .onAppear { NotificationManager.requestPermission() }
+                .environmentObject(watcher)
+                .onAppear {
+                    NotificationManager.requestPermission()
+                    watcher.startWatching(runner: runner)
+                }
         }
         .menuBarExtraStyle(.menu)
     }

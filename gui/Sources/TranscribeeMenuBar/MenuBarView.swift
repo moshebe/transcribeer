@@ -7,10 +7,15 @@ import AppKit
 
 struct MenuBarView: View {
     @EnvironmentObject var runner: TranscribeeRunner
+    @EnvironmentObject var watcher: AppWatcher
 
     var body: some View {
         switch runner.state {
         case .idle:
+            if let meetingApp = watcher.activeMeetingApp {
+                Button("▶ \(meetingApp) detected — Start Recording") { runner.start() }
+                Divider()
+            }
             Button("Start Recording") { runner.start() }
             Divider()
             Button("Quit") { NSApp.terminate(nil) }

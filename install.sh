@@ -54,7 +54,29 @@ if command -v codesign &>/dev/null && [[ -f "$ENTITLEMENTS" ]]; then
 fi
 ok "capture-bin installed → $BIN_DIR/capture-bin"
 
-# ── 5. Python venv ────────────────────────────────────────────────────────────
+# ── 5. GUI app ────────────────────────────────────────────────────────────────
+APP_DEST="/Applications/Transcribee.app"
+APP_BIN="$REPO_DIR/gui/.build/release/TranscribeeMenuBar"
+ENTITLEMENTS="$REPO_DIR/capture/capture.entitlements.plist"
+
+# Build if binary is missing or source is newer
+if [[ ! -f "$APP_BIN" ]] || [[ "$REPO_DIR/gui/Sources" -nt "$APP_BIN" ]]; then
+  echo "    Building GUI..."
+  (cd "$REPO_DIR/gui" && swift build -c release -q) || fail "GUI build failed"
+fi
+
+mkdir -p "$APP_DEST/Contents/MacOS"
+cp "$APP_BIN" "$APP_DEST/Contents/MacOS/TranscribeeMenuBar"
+cp "$REPO_DIR/gui/Info.plist" "$APP_DEST/Contents/"
+chmod +x "$APP_DEST/Contents/MacOS/TranscribeeMenuBar"
+
+# Sign (ad-hoc is fine for personal use)
+if command -v codesign &>/dev/null; then
+  codesign --force --sign - "$APP_DEST" 2>/dev/null || true
+fi
+ok "Transcribee.app installed → $APP_DEST"
+
+# ── 6. Python venv ────────────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
   echo "[!] uv not found — installing..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -70,7 +92,7 @@ source "$VENV/bin/activate"
 
 uv pip install -q faster-whisper torch torchaudio typer rich requests openai anthropic
 
-# ── 6. Diarization backend ────────────────────────────────────────────────────
+# ── 7. Diarization backend ────────────────────────────────────────────────────
 echo ""
 echo "Speaker diarization — choose backend:"
 echo "  (A) pyannote   — best quality, requires HuggingFace account"
@@ -116,11 +138,11 @@ case "$(echo "$diar_choice" | tr '[:lower:]' '[:upper:]')" in
     ;;
 esac
 
-# ── 7. Install transcribee package ───────────────────────────────────────────
+# ── 8. Install transcribee package ───────────────────────────────────────────
 uv pip install -q -e "$REPO_DIR"
 ok "transcribee package installed"
 
-# ── 8. Write config ───────────────────────────────────────────────────────────
+# ── 9. Write config ───────────────────────────────────────────────────────────
 mkdir -p "$TRANSCRIBEE_DIR/sessions"
 CONFIG_FILE="$TRANSCRIBEE_DIR/config.toml"
 
@@ -145,7 +167,7 @@ else
   info "Config already exists at $CONFIG_FILE — not overwritten"
 fi
 
-# ── 9. PATH setup ─────────────────────────────────────────────────────────────
+# ── 10. PATH setup ────────────────────────────────────────────────────────────
 mkdir -p "$LOCAL_BIN"
 ln -sf "$VENV/bin/transcribee" "$LOCAL_BIN/transcribee"
 ok "Symlink: $LOCAL_BIN/transcribee → $VENV/bin/transcribee"
@@ -172,4 +194,7 @@ echo "  transcribee run --duration 300    # record 5 min, transcribe, summarize"
 echo "  transcribee record                # record until Ctrl+C"
 echo "  transcribee transcribe audio.wav  # transcribe existing file"
 echo "  transcribee --help                # all commands"
+echo ""
+echo "  To launch: open /Applications/Transcribee.app"
+echo "  To auto-start on login: add it in System Settings → General → Login Items"
 echo ""
