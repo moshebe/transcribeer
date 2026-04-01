@@ -11,6 +11,9 @@ build/
 # macOS
 .DS_Store
 
+# Swift build artifacts
+gui/.build/
+
 # Claude Code
 .claude/
 
