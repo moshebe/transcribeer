@@ -14,6 +14,29 @@ import rumps
 
 from transcribee.config import load
 
+
+def _load_shell_env() -> None:
+    """
+    When launched as a menubar app (not from a terminal) macOS gives the process
+    a minimal env — API keys set in ~/.zshrc / ~/.zprofile are missing.
+    Spawn a login shell to collect env vars and merge them into os.environ.
+    """
+    import os
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    try:
+        result = subprocess.run(
+            [shell, "-l", "-c", "env"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                if k not in os.environ:  # don't overwrite existing values
+                    os.environ[k] = v
+    except Exception:
+        pass  # best-effort; the app still works without it
+
+
 # us.zoom.caphost only runs when a Zoom meeting is active (not just Zoom idle)
 _ZOOM_MEETING_BUNDLE = "us.zoom.caphost"
 _NOTIF_CATEGORY = "ZOOM_MEETING"
@@ -229,8 +252,9 @@ class TranscribeeApp(rumps.App):
         except Exception as e:
             return self._set_error(f"Transcription failed: {e}")
 
-        # 3. Summarize (best-effort)
+        # 3. Summarize
         self._set_status("🤔 Summarizing…")
+        summary_err: str | None = None
         try:
             summary = sm.run(
                 transcript=transcript_path.read_text(encoding="utf-8"),
@@ -239,10 +263,10 @@ class TranscribeeApp(rumps.App):
                 ollama_host=cfg.ollama_host,
             )
             summary_path.write_text(summary, encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            summary_err = str(e)
 
-        self._set_done()
+        self._set_done(summary_err)
 
     # ── State helpers ─────────────────────────────────────────────────────────
 
@@ -271,14 +295,20 @@ class TranscribeeApp(rumps.App):
         self._stop_item.hidden = True
         self._start_item.hidden = True
 
-    def _set_done(self):
+    def _set_done(self, summary_err: str | None = None):
         self.title = "✓"
-        self._status_item.title = "✓ Done"
+        if summary_err:
+            self._status_item.title = "✓ Done  (summary failed)"
+            rumps.notification(
+                "Transcribee", "Done — summary failed", summary_err, sound=False
+            )
+        else:
+            self._status_item.title = "✓ Done"
+            rumps.notification("Transcribee", "Done", str(self._sess), sound=False)
         self._status_item.hidden = False
         self._open_item.hidden = False
         self._stop_item.hidden = True
         self._start_item.hidden = False
-        rumps.notification("Transcribee", "Done", str(self._sess), sound=False)
 
     def _set_error(self, msg: str):
         self.title = "⚠"
@@ -291,6 +321,7 @@ class TranscribeeApp(rumps.App):
 
 
 def main():
+    _load_shell_env()
     TranscribeeApp().run()
 
 
