@@ -43,6 +43,8 @@ def record(
 
     try:
         capture.record(out_path=out, duration=duration, pid_file=pid_file, config=cfg)
+    except KeyboardInterrupt:
+        console.print("")  # newline after terminal's ^C
     except PermissionError as e:
         console.print(f"[red]Permission denied:[/red] {e}")
         raise typer.Exit(1)
@@ -68,13 +70,23 @@ def transcribe(
     console.print(f"[bold]Transcribing:[/bold] {audio}")
     console.print(f"  Language: {language}  |  Diarization: {diarize_backend}")
 
-    tx.run(
-        audio_path=audio,
-        language=language,
-        diarize_backend=diarize_backend,
-        num_speakers=cfg.num_speakers,
-        out_path=out_path,
-    )
+    with console.status("[cyan]Preparing...[/cyan]") as status:
+        def _prog(step: str, pct: float | None = None) -> None:
+            msgs = {"diarizing": "Diarizing speakers...", "loading": "Loading model..."}
+            if step == "transcribing":
+                pct_str = f" {pct:.0%}" if pct is not None else ""
+                status.update(f"[cyan]Transcribing...{pct_str}[/cyan]")
+            elif step in msgs:
+                status.update(f"[cyan]{msgs[step]}[/cyan]")
+
+        tx.run(
+            audio_path=audio,
+            language=language,
+            diarize_backend=diarize_backend,
+            num_speakers=cfg.num_speakers,
+            out_path=out_path,
+            on_progress=_prog,
+        )
     console.print(f"[green]Transcript:[/green] {out_path}")
 
 
@@ -96,12 +108,13 @@ def summarize(
 
     text = transcript.read_text(encoding="utf-8")
     try:
-        summary = sm.run(
-            transcript=text,
-            backend=llm_backend,
-            model=cfg.llm_model,
-            ollama_host=cfg.ollama_host,
-        )
+        with console.status("[cyan]Summarizing...[/cyan]"):
+            summary = sm.run(
+                transcript=text,
+                backend=llm_backend,
+                model=cfg.llm_model,
+                ollama_host=cfg.ollama_host,
+            )
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -137,6 +150,9 @@ def run(
 
     try:
         capture.record(out_path=audio_path, duration=duration, pid_file=None, config=cfg)
+    except KeyboardInterrupt:
+        console.print("")  # newline after terminal's ^C
+        console.print("  [dim]Recording stopped.[/dim]")
     except PermissionError as e:
         console.print(f"[red]Permission denied:[/red] {e}")
         raise typer.Exit(1)
@@ -145,17 +161,27 @@ def run(
     console.print("\n[bold cyan]Step 2/3 — Transcribing[/bold cyan]")
     language = lang or cfg.language
     diarize_backend = "none" if no_diarize else cfg.diarization
-    try:
-        tx.run(
-            audio_path=audio_path,
-            language=language,
-            diarize_backend=diarize_backend,
-            num_speakers=cfg.num_speakers,
-            out_path=transcript_path,
-        )
-    except ValueError as e:
-        console.print(f"[red]Transcription failed:[/red] {e}")
-        raise typer.Exit(1)
+    with console.status("[cyan]Preparing...[/cyan]") as status:
+        def _prog(step: str, pct: float | None = None) -> None:
+            msgs = {"diarizing": "Diarizing speakers...", "loading": "Loading model..."}
+            if step == "transcribing":
+                pct_str = f" {pct:.0%}" if pct is not None else ""
+                status.update(f"[cyan]Transcribing...{pct_str}[/cyan]")
+            elif step in msgs:
+                status.update(f"[cyan]{msgs[step]}[/cyan]")
+
+        try:
+            tx.run(
+                audio_path=audio_path,
+                language=language,
+                diarize_backend=diarize_backend,
+                num_speakers=cfg.num_speakers,
+                out_path=transcript_path,
+                on_progress=_prog,
+            )
+        except ValueError as e:
+            console.print(f"[red]Transcription failed:[/red] {e}")
+            raise typer.Exit(1)
     console.print(f"  [green]Transcript:[/green] {transcript_path}")
 
     if no_summarize:
@@ -166,12 +192,13 @@ def run(
     console.print("\n[bold cyan]Step 3/3 — Summarizing[/bold cyan]")
     text = transcript_path.read_text(encoding="utf-8")
     try:
-        summary = sm.run(
-            transcript=text,
-            backend=cfg.llm_backend,
-            model=cfg.llm_model,
-            ollama_host=cfg.ollama_host,
-        )
+        with console.status("[cyan]Summarizing...[/cyan]"):
+            summary = sm.run(
+                transcript=text,
+                backend=cfg.llm_backend,
+                model=cfg.llm_model,
+                ollama_host=cfg.ollama_host,
+            )
     except ValueError as e:
         console.print(f"[yellow]Summarization skipped:[/yellow] {e}")
     else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -93,13 +94,21 @@ def run(
     diarize_backend: str,
     num_speakers: int | None,
     out_path: Path,
+    on_progress: Callable[[str, float | None], None] | None = None,
 ) -> Path:
     """
     Full pipeline: ensure_wav → diarize → whisper → merge → write .txt.
 
     language: "he" | "en" | "auto"  ("auto" → None for faster-whisper auto-detect)
+    on_progress: optional callback(step, fraction) where step is one of
+        "diarizing" | "loading" | "transcribing" | "done" and fraction is
+        0.0–1.0 during transcription, None otherwise.
     """
     from transcribee import diarize
+
+    def _prog(step: str, pct: float | None = None) -> None:
+        if on_progress:
+            on_progress(step, pct)
 
     wav_path = ensure_wav(audio_path)
 
@@ -111,17 +120,26 @@ def run(
             "System Settings → Privacy & Security and that system audio is playing."
         )
 
+    _prog("diarizing")
     diar_segments = diarize.run(wav_path, backend=diarize_backend, num_speakers=num_speakers)
 
-    whisper_lang = None if language == "auto" else language
+    _prog("loading")
     model = _load_whisper_model()
+
+    whisper_lang = None if language == "auto" else language
     segments_iter, info = model.transcribe(
         str(audio_path), language=whisper_lang, word_timestamps=True
     )
-    whisper_segments = [(seg.start, seg.end, seg.text.strip()) for seg in segments_iter]
+    _prog("transcribing", 0.0)
+    whisper_segments = []
+    for seg in segments_iter:
+        whisper_segments.append((seg.start, seg.end, seg.text.strip()))
+        if info.duration:
+            _prog("transcribing", min(seg.end / info.duration, 1.0))
 
     labeled = assign_speakers(whisper_segments, diar_segments)
     output = format_output(labeled)
 
     out_path.write_text(output, encoding="utf-8")
+    _prog("done")
     return out_path
