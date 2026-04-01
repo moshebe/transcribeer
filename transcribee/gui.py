@@ -13,6 +13,7 @@ import objc
 import rumps
 
 from transcribee.config import load
+from transcribee.settings_window import SettingsWindowController
 
 
 def _load_shell_env() -> None:
@@ -132,18 +133,29 @@ class TranscribeeApp(rumps.App):
         self._notif_delegate._on_record = self._on_start
         _setup_notifications(self._notif_delegate)
 
+        # Settings window controller (lazy — built on first open)
+        self._settings_ctrl: SettingsWindowController | None = None
+        self._history_window = None  # lazy-init on first click
+
         # Menu items
         self._status_item = rumps.MenuItem("", callback=None)
         self._open_item = rumps.MenuItem("📁 Open Session Dir", callback=self._on_open)
+        self._rename_item = rumps.MenuItem("✏️ Rename Session…", callback=self._on_rename)
         self._stop_item = rumps.MenuItem("⏹ Stop Recording", callback=self._on_stop)
         self._start_item = rumps.MenuItem("Start Recording", callback=self._on_start)
+        self._history_item = rumps.MenuItem("History…", callback=self._on_history)
+        self._settings_item = rumps.MenuItem("Settings…", callback=self._on_settings)
 
         self.menu = [
             self._status_item,
             self._open_item,
+            self._rename_item,
             self._stop_item,
             None,
             self._start_item,
+            None,
+            self._history_item,
+            self._settings_item,
         ]
 
         self._timer = rumps.Timer(self._tick, _TICK_INTERVAL)
@@ -184,11 +196,52 @@ class TranscribeeApp(rumps.App):
 
     # ── Menu callbacks ────────────────────────────────────────────────────────
 
+    def _on_settings(self, _=None):
+        if self._settings_ctrl is None:
+            self._settings_ctrl = SettingsWindowController.alloc().initWithApp_(self)
+        self._settings_ctrl.show()
+
+    def _on_history(self, _=None):
+        from transcribee.history_window import HistoryWindow
+        if self._history_window is None:
+            self._history_window = HistoryWindow(self.cfg)
+        self._history_window.show()
+
     def _on_start(self, _=None):
+        from transcribee import session
         _cancel_zoom_notification()
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        sess = session.new_session(self.cfg.sessions_dir)
+        self._sess = sess
+        self._thread = threading.Thread(target=self._run, args=(sess,), daemon=True)
         self._thread.start()
+
+    def _on_rename(self, _=None):
+        if self._sess is None:
+            return
+        from transcribee.meta import read_meta, set_name
+        current = read_meta(self._sess).get("name", "")
+        win = rumps.Window(
+            message="Supports any language, including Hebrew (עברית) and special characters:",
+            title="Name this session",
+            default_text=current,
+            ok="Save",
+            cancel="Cancel",
+            dimensions=(300, 24),
+        )
+        response = win.run()
+        if response.clicked and response.text.strip():
+            set_name(self._sess, response.text.strip())
+        self._update_rename_label()
+
+    def _update_rename_label(self) -> None:
+        """Refresh the rename menu item to show the current session name."""
+        if self._sess is None:
+            self._rename_item.title = "✏️ Rename Session…"
+            return
+        from transcribee.meta import read_meta
+        name = read_meta(self._sess).get("name", "")
+        self._rename_item.title = f"✏️ {name}" if name else "✏️ Rename Session…"
 
     def _on_stop(self, _=None):
         self._stop_event.set()
@@ -203,12 +256,10 @@ class TranscribeeApp(rumps.App):
 
     # ── Pipeline (background thread) ─────────────────────────────────────────
 
-    def _run(self):
-        from transcribee import session, transcribe as tx, summarize as sm
+    def _run(self, sess: Path):
+        from transcribee import transcribe as tx, summarize as sm
 
         cfg = self.cfg
-        sess = session.new_session(cfg.sessions_dir)
-        self._sess = sess
         audio_path = sess / "audio.wav"
         transcript_path = sess / "transcript.txt"
         summary_path = sess / "summary.md"
@@ -239,6 +290,11 @@ class TranscribeeApp(rumps.App):
             self._record_start = None
             return self._set_error(str(e))
 
+        mode = cfg.pipeline_mode  # "record-only" | "record+transcribe" | "record+transcribe+summarize"
+
+        if mode == "record-only":
+            return self._set_done()
+
         # 2. Transcribe
         self._set_status("📝 Transcribing…")
         try:
@@ -251,6 +307,9 @@ class TranscribeeApp(rumps.App):
             )
         except Exception as e:
             return self._set_error(f"Transcription failed: {e}")
+
+        if mode == "record+transcribe":
+            return self._set_done()
 
         # 3. Summarize
         self._set_status("🤔 Summarizing…")
@@ -274,6 +333,7 @@ class TranscribeeApp(rumps.App):
         self.title = "🎙"
         self._status_item.hidden = True
         self._open_item.hidden = True
+        self._rename_item.hidden = True
         self._stop_item.hidden = True
         self._start_item.hidden = False
 
@@ -283,6 +343,8 @@ class TranscribeeApp(rumps.App):
         self._status_item.title = "⏺ Recording  00:00"
         self._status_item.hidden = False
         self._open_item.hidden = False
+        self._rename_item.title = "✏️ Rename Session…"
+        self._rename_item.hidden = False
         self._stop_item.hidden = False
         self._stop_item.set_callback(self._on_stop)
         self._start_item.hidden = True
@@ -292,19 +354,22 @@ class TranscribeeApp(rumps.App):
         self._status_item.title = label
         self._status_item.hidden = False
         self._open_item.hidden = False
+        self._rename_item.hidden = True
         self._stop_item.hidden = True
         self._start_item.hidden = True
 
     def _set_done(self, summary_err: str | None = None):
+        from transcribee.meta import get_display_name
         self.title = "✓"
+        display = get_display_name(self._sess) if self._sess else ""
         if summary_err:
             self._status_item.title = "✓ Done  (summary failed)"
             rumps.notification(
-                "Transcribee", "Done — summary failed", summary_err, sound=False
+                "Transcribee", f"Done — {display}", summary_err, sound=False
             )
         else:
             self._status_item.title = "✓ Done"
-            rumps.notification("Transcribee", "Done", str(self._sess), sound=False)
+            rumps.notification("Transcribee", "Done", display, sound=False)
         self._status_item.hidden = False
         self._open_item.hidden = False
         self._stop_item.hidden = True
@@ -315,6 +380,7 @@ class TranscribeeApp(rumps.App):
         self._status_item.title = "⚠ Error"
         self._status_item.hidden = False
         self._open_item.hidden = self._sess is None
+        self._rename_item.hidden = True
         self._stop_item.hidden = True
         self._start_item.hidden = False
         rumps.alert(title="Transcribee Error", message=msg)

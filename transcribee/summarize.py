@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+from transcribee.keychain import get_api_key as _kc_get
+
 SYSTEM_PROMPT = """You are a meeting summarizer. Given a meeting transcript with speaker labels and timestamps, produce a concise summary in the same language as the transcript. Include:
 - 2-3 sentence overview
 - Key decisions made
@@ -34,9 +36,9 @@ def run(
 
 
 def _run_openai(transcript: str, model: str) -> str:
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = _kc_get("openai") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is not set.")
+        raise ValueError("No OpenAI API key found (Keychain or OPENAI_API_KEY env var).")
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
@@ -50,9 +52,9 @@ def _run_openai(transcript: str, model: str) -> str:
 
 
 def _run_anthropic(transcript: str, model: str) -> str:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _kc_get("anthropic") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable is not set.")
+        raise ValueError("No Anthropic API key found (Keychain or ANTHROPIC_API_KEY env var).")
     from anthropic import Anthropic
     client = Anthropic(api_key=api_key)
     response = client.messages.create(

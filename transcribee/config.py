@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+_CONFIG_PATH = Path.home() / ".transcribee" / "config.toml"
 
 _DEFAULTS = {
     "transcription": {
@@ -20,7 +21,16 @@ _DEFAULTS = {
         "sessions_dir": "~/.transcribee/sessions",
         "capture_bin": "~/.transcribee/bin/capture-bin",
     },
+    "pipeline": {
+        "mode": "record+transcribe+summarize",
+    },
 }
+
+PIPELINE_MODES = [
+    "record-only",
+    "record+transcribe",
+    "record+transcribe+summarize",
+]
 
 
 @dataclass
@@ -33,14 +43,14 @@ class Config:
     ollama_host: str
     sessions_dir: Path
     capture_bin: Path
+    pipeline_mode: str = "record+transcribe+summarize"
 
 
 def load() -> Config:
     """Load ~/.transcribee/config.toml. Missing keys use defaults. Never raises."""
-    config_path = Path.home() / ".transcribee" / "config.toml"
     data: dict = {}
-    if config_path.exists():
-        with open(config_path, "rb") as f:
+    if _CONFIG_PATH.exists():
+        with open(_CONFIG_PATH, "rb") as f:
             data = tomllib.load(f)
 
     def get(section: str, key: str):
@@ -58,4 +68,38 @@ def load() -> Config:
         ollama_host=get("summarization", "ollama_host"),
         sessions_dir=Path(get("paths", "sessions_dir")).expanduser(),
         capture_bin=Path(get("paths", "capture_bin")).expanduser(),
+        pipeline_mode=get("pipeline", "mode"),
     )
+
+
+def save(cfg: Config) -> None:
+    """Write cfg back to ~/.transcribee/config.toml (creates dirs as needed)."""
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Represent num_speakers: None -> 0 (auto)
+    raw_speakers = 0 if cfg.num_speakers is None else cfg.num_speakers
+
+    # Manual TOML serialisation — avoids tomli_w dep for simple flat structure
+    lines: list[str] = []
+
+    lines += [
+        "[pipeline]",
+        f'mode = "{cfg.pipeline_mode}"',
+        "",
+        "[transcription]",
+        f'language = "{cfg.language}"',
+        f'diarization = "{cfg.diarization}"',
+        f"num_speakers = {raw_speakers}",
+        "",
+        "[summarization]",
+        f'backend = "{cfg.llm_backend}"',
+        f'model = "{cfg.llm_model}"',
+        f'ollama_host = "{cfg.ollama_host}"',
+        "",
+        "[paths]",
+        f'sessions_dir = "{cfg.sessions_dir}"',
+        f'capture_bin = "{cfg.capture_bin}"',
+        "",
+    ]
+
+    _CONFIG_PATH.write_text("\n".join(lines), encoding="utf-8")
