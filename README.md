@@ -1,149 +1,93 @@
-# transcribeer
-
-macOS audio capture, transcription, and summarization — CLI-first, Hebrew + English.
-
-Captures both sides of a call via system audio (SCStream), transcribes with faster-whisper, optionally diarizes speakers, and summarizes with an LLM.
+<div align="center">
+  <img src="assets/logo-readme.png" width="120" alt="Transcribeer logo"/>
+  <h1>Transcribeer 🍺</h1>
+  <p><strong>Local-first meeting transcription and summarization for macOS</strong></p>
+  <p>
+    <img src="https://img.shields.io/badge/macOS-13%2B-blue?logo=apple" alt="macOS 13+"/>
+    <img src="https://img.shields.io/badge/Apple_Silicon-arm64-green" alt="Apple Silicon"/>
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
+  </p>
+</div>
 
 ---
+
+Transcribeer captures both sides of any call, transcribes with speaker labels, and optionally summarizes with an LLM — all running locally on your Mac. No cloud required.
+
+## Features
+
+- **System audio capture** — records both microphone and speaker audio via Apple ScreenCaptureKit
+- **Local transcription** — [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [ivrit-ai](https://huggingface.co/ivrit-ai) model, optimised for Hebrew and English
+- **Speaker diarization** — who said what, via [pyannote.audio](https://github.com/pyannote/pyannote-audio) or [resemblyzer](https://github.com/resemble-ai/Resemblyzer)
+- **LLM summarization** — Ollama (local), OpenAI, or Anthropic
+- **Native macOS menubar app** — start/stop recording from the menu bar, session browser, settings UI
+- **CLI** — scriptable, composable pipeline (`record → transcribe → summarize`)
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Audio capture | [Apple ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) (Swift) |
+| Transcription | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [ivrit-ai model](https://huggingface.co/ivrit-ai) |
+| Diarization | [pyannote.audio](https://github.com/pyannote/pyannote-audio) / [resemblyzer](https://github.com/resemble-ai/Resemblyzer) |
+| Summarization | [Ollama](https://ollama.ai) (local), [OpenAI](https://openai.com), [Anthropic](https://anthropic.com) |
+| GUI | [rumps](https://github.com/jaredks/rumps) (menubar) + WKWebView (native windows) |
+| Credentials | macOS Keychain |
 
 ## Requirements
 
-- macOS 13 (Ventura) or later, Apple Silicon (arm64)
-- Python 3.11+
-- [uv](https://github.com/astral-sh/uv)
-- ffmpeg (`brew install ffmpeg`)
-
----
+- macOS 13 (Ventura) or later
+- Apple Silicon (arm64) — Intel builds require compiling the Swift capture binary from source
+- [Homebrew](https://brew.sh)
 
 ## Install
 
 ```bash
-git clone https://github.com/your-org/transcribeer
-cd transcribeer
-bash install.sh
+brew tap moshebeladev/transcribeer
+brew install transcribeer
 ```
 
-The installer will:
-1. Check macOS version and architecture
-2. Install ffmpeg if missing (via Homebrew)
-3. Place `capture-bin` in `~/.transcribeer/bin/`
-4. Create a Python venv at `~/.transcribeer/venv/`
-5. Ask which diarization backend to install:
-   - **pyannote** — best quality, requires a HuggingFace account and token
-   - **resemblyzer** — no account needed, good quality
-   - **none** — no speaker labels, fastest
-6. Write a default config to `~/.transcribeer/config.toml`
-7. Symlink `transcribeer` into `~/.local/bin/`
-
----
-
-## Usage
-
-### One-shot: record → transcribe → summarize
+## First Run
 
 ```bash
-transcribeer run
-# or with a time limit:
-transcribeer run --duration 300   # auto-stop after 5 minutes
+transcribeer-gui          # launch the menubar app (recommended)
+transcribeer --help       # CLI usage
 ```
 
-Press `Ctrl+C` to stop recording. Transcription and summarization run automatically.
+The first transcription will automatically download the Whisper model (~1.5 GB). This is a one-time download.
 
-Output saved to `~/.transcribeer/sessions/YYYY-MM-DD-HHMM/`:
-- `audio.wav`
-- `transcript.txt`
-- `summary.md`
-
-### Record only
+## CLI Usage
 
 ```bash
-transcribeer record                     # stop with Ctrl+C
-transcribeer record --duration 60       # stop after 60 seconds
-transcribeer record --out /tmp/call.wav # custom output path
+transcribeer run --duration 300        # record 5 min, transcribe, summarize
+transcribeer record                    # record until Ctrl+C
+transcribeer transcribe audio.wav      # transcribe an existing file
+transcribeer summarize session.txt     # summarize a transcript
 ```
-
-macOS will prompt for **Screen & System Audio Recording** permission on first run.
-
-### Transcribe an existing file
-
-```bash
-transcribeer transcribe call.wav
-transcribeer transcribe call.wav --lang he          # force Hebrew
-transcribeer transcribe call.wav --no-diarize       # skip speaker labels
-transcribeer transcribe call.wav --out call.txt     # custom output path
-```
-
-Supported languages: `he` (Hebrew), `en` (English), `auto` (detect).
-
-Output format:
-```
-[00:00 -> 00:08] Speaker 1: שלום, איך אתה?
-[00:09 -> 00:15] Speaker 2: בסדר גמור, תודה.
-```
-
-### Summarize a transcript
-
-```bash
-transcribeer summarize call.txt
-transcribeer summarize call.txt --backend openai    # override LLM backend
-transcribeer summarize call.txt --out call.md       # custom output path
-```
-
----
 
 ## Configuration
 
-`~/.transcribeer/config.toml` is written by the installer. Edit it to change defaults:
+Config is stored at `~/.transcribeer/config.toml`:
 
 ```toml
 [transcription]
-language = "auto"          # auto, he, en
+language = "auto"           # auto, he, en
 diarization = "resemblyzer" # pyannote, resemblyzer, none
-num_speakers = 0           # 0 = auto-detect
+num_speakers = 0            # 0 = auto-detect
 
 [summarization]
-backend = "ollama"         # ollama, openai, anthropic
+backend = "ollama"          # ollama, openai, anthropic
 model = "llama3"
 ollama_host = "http://localhost:11434"
-
-[paths]
-sessions_dir = "~/.transcribeer/sessions"
-capture_bin = "~/.transcribeer/bin/capture-bin"
 ```
 
-### LLM backends
+## Building from Source
 
-| Backend | Setup |
-|---|---|
-| `ollama` | Run [Ollama](https://ollama.ai) locally with a model pulled (`ollama pull llama3`) |
-| `openai` | Set `OPENAI_API_KEY` in your environment |
-| `anthropic` | Set `ANTHROPIC_API_KEY` in your environment |
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
+## Recording Consent
 
-## Models
+> **You are solely responsible for complying with all applicable laws and regulations regarding the recording of conversations in your jurisdiction.** Many jurisdictions require the consent of all parties before a conversation may be recorded. Always obtain necessary consent before recording any meeting or call. The authors of this software accept no liability for misuse.
 
-| Component | Model |
-|---|---|
-| Transcription | `ivrit-ai/whisper-large-v3-turbo-ct2` (via faster-whisper) |
-| Diarization (pyannote) | `ivrit-ai/pyannote-speaker-diarization-3.1` |
+## License
 
-Models are downloaded from HuggingFace on first use and cached at `~/.cache/huggingface/`.
-
----
-
-## Permission
-
-On first `transcribeer record` or `transcribeer run`, macOS will request **Screen & System Audio Recording** permission. Grant it in **System Settings → Privacy & Security → Screen & System Audio Recording**.
-
----
-
-## Development
-
-```bash
-git clone https://github.com/your-org/transcribeer
-cd transcribeer
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
-pytest
-```
+MIT — see [LICENSE](LICENSE).
