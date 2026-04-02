@@ -1,8 +1,8 @@
 class Transcribeer < Formula
   desc "Local-first meeting transcription and summarization for macOS"
-  homepage "https://github.com/moshebeladev/transcribeer"
-  url "https://github.com/moshebeladev/transcribeer/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "PLACEHOLDER_SHA256_UPDATE_BEFORE_RELEASE"
+  homepage "https://github.com/moshebe/transcribeer"
+  url "https://github.com/moshebe/transcribeer/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "34a98e6bcdadae624659d6a2f8764cf8690670b797dc4fb7cb57c493828ca22a"
   license "MIT"
 
   depends_on "ffmpeg"

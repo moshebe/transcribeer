@@ -23,9 +23,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/moshebeladev/transcribeer"
-Repository = "https://github.com/moshebeladev/transcribeer"
-"Bug Tracker" = "https://github.com/moshebeladev/transcribeer/issues"
+Homepage = "https://github.com/moshebe/transcribeer"
+Repository = "https://github.com/moshebe/transcribeer"
+"Bug Tracker" = "https://github.com/moshebe/transcribeer/issues"
 
 [project.optional-dependencies]
 openai = ["openai>=1"]

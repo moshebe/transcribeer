@@ -13,7 +13,7 @@ Thanks for your interest! Here's how to get set up and contribute.
 
 ```bash
 # Clone the repo
-git clone https://github.com/moshebeladev/transcribeer.git
+git clone https://github.com/moshebe/transcribeer.git
 cd transcribeer
 
 # Install Python deps (dev extras)
