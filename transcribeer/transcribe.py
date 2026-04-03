@@ -122,6 +122,8 @@ def run(
 
     _prog("diarizing")
     diar_segments = diarize.run(wav_path, backend=diarize_backend, num_speakers=num_speakers)
+    if not diar_segments and diarize_backend != "none":
+        _prog("diarization_empty")
 
     _prog("loading")
     model = _load_whisper_model()

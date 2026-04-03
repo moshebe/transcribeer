@@ -336,13 +336,21 @@ class TranscribeerApp(rumps.App):
         # 2. Transcribe
         self._set_status("📝 Transcribing…")
         log("transcription started")
+        diarization_warn: str | None = None
         try:
+            def _prog(step: str, pct: float | None = None) -> None:
+                nonlocal diarization_warn
+                if step == "diarization_empty":
+                    diarization_warn = "Audio too short for speaker diarization — no speaker labels"
+                    log(diarization_warn)
+
             tx.run(
                 audio_path=audio_path,
                 language=cfg.language,
                 diarize_backend=cfg.diarization,
                 num_speakers=cfg.num_speakers,
                 out_path=transcript_path,
+                on_progress=_prog,
             )
             log("transcription done")
         except Exception as e:
@@ -350,7 +358,7 @@ class TranscribeerApp(rumps.App):
             return self._set_error(f"Transcription failed: {e}")
 
         if mode == "record+transcribe":
-            return self._set_done()
+            return self._set_done(warn=diarization_warn)
 
         # 3. Summarize
         self._set_status("🤔 Summarizing…")
@@ -369,7 +377,7 @@ class TranscribeerApp(rumps.App):
             summary_err = str(e)
             log(f"summarization failed: {e}")
 
-        self._set_done(summary_err)
+        self._set_done(summary_err, warn=diarization_warn)
 
     # ── State helpers ─────────────────────────────────────────────────────────
 
@@ -402,7 +410,7 @@ class TranscribeerApp(rumps.App):
         self._stop_item.hidden = True
         self._start_item.hidden = True
 
-    def _set_done(self, summary_err: str | None = None):
+    def _set_done(self, summary_err: str | None = None, warn: str | None = None):
         from transcribeer.meta import get_display_name
         self.title = "✓"
         display = get_display_name(self._sess) if self._sess else ""
@@ -411,6 +419,9 @@ class TranscribeerApp(rumps.App):
             rumps.notification(
                 "Transcribee", f"Done — {display}", summary_err, sound=False
             )
+        elif warn:
+            self._status_item.title = "✓ Done  (warning)"
+            rumps.notification("Transcribee", f"Done — {display}", warn, sound=False)
         else:
             self._status_item.title = "✓ Done"
             rumps.notification("Transcribee", "Done", display, sound=False)
