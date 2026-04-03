@@ -33,7 +33,7 @@ anthropic = ["anthropic>=0.25"]
 resemblyzer = ["resemblyzer", "scikit-learn"]
 pyannote = ["pyannote.audio"]
 dev = ["pytest", "openai>=1", "anthropic>=0.25", "resemblyzer", "scikit-learn"]
-gui = ["rumps>=0.4", "pyobjc-framework-Cocoa>=10", "pyobjc-framework-UserNotifications>=10", "pyobjc-framework-WebKit>=10", "resemblyzer", "scikit-learn"]
+gui = ["rumps>=0.4", "pyobjc-framework-Cocoa>=10", "pyobjc-framework-UserNotifications>=10", "pyobjc-framework-WebKit>=10", "resemblyzer", "scikit-learn", "openai>=1", "anthropic>=0.25"]
 
 [project.scripts]
 transcribeer = "transcribeer.cli:app"

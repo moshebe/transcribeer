@@ -3646,6 +3646,8 @@ dev = [
     { name = "scikit-learn" },
 ]
 gui = [
+    { name = "anthropic" },
+    { name = "openai" },
     { name = "pyobjc-framework-cocoa" },
     { name = "pyobjc-framework-usernotifications" },
     { name = "pyobjc-framework-webkit" },
@@ -3668,8 +3670,10 @@ resemblyzer = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.25" },
     { name = "anthropic", marker = "extra == 'dev'", specifier = ">=0.25" },
+    { name = "anthropic", marker = "extra == 'gui'", specifier = ">=0.25" },
     { name = "faster-whisper" },
     { name = "openai", marker = "extra == 'dev'", specifier = ">=1" },
+    { name = "openai", marker = "extra == 'gui'", specifier = ">=1" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1" },
     { name = "pyannote-audio", marker = "extra == 'pyannote'" },
     { name = "pyobjc-framework-cocoa", marker = "extra == 'gui'", specifier = ">=10" },
