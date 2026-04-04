@@ -62,8 +62,8 @@ mkdir -p "$BIN_DIR"
 cp "$REPO_DIR/capture-bin" "$BIN_DIR/capture-bin"
 chmod +x "$BIN_DIR/capture-bin"
 ENTITLEMENTS="$REPO_DIR/capture/capture.entitlements.plist"
-if command -v codesign &>/dev/null && [[ -f "$ENTITLEMENTS" ]]; then
-  codesign --force --sign - --entitlements "$ENTITLEMENTS" "$BIN_DIR/capture-bin" 2>/dev/null || true
+if command -v codesign &>/dev/null && ! codesign --verify "$BIN_DIR/capture-bin" 2>/dev/null; then
+  [[ -f "$ENTITLEMENTS" ]] && codesign --sign - --entitlements "$ENTITLEMENTS" "$BIN_DIR/capture-bin" 2>/dev/null || true
 fi
 ok "capture-bin installed → $BIN_DIR/capture-bin"
 

@@ -11,6 +11,7 @@ import AppKit
 import UserNotifications as UN
 import objc
 import rumps
+from Foundation import NSMakeRect
 
 from transcribeer.config import load
 from transcribeer.settings_window import SettingsWindowController
@@ -71,6 +72,38 @@ class _NotifDelegate(AppKit.NSObject):
     ):
         # Show banner even while the app is frontmost
         completionHandler(UN.UNNotificationPresentationOptionBanner)
+
+
+def _run_input_dialog(
+    title: str,
+    message: str,
+    default_text: str = "",
+    ok_label: str = "OK",
+    cancel_label: str = "Cancel",
+) -> tuple[bool, str]:
+    """Show a modal NSAlert with a text field. Returns (ok_clicked, text)."""
+    alert = AppKit.NSAlert.alloc().init()
+    alert.setMessageText_(title)
+    alert.setInformativeText_(message)
+    alert.addButtonWithTitle_(ok_label)
+    alert.addButtonWithTitle_(cancel_label)
+
+    field = AppKit.NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 22))
+    field.setStringValue_(default_text)
+    alert.setAccessoryView_(field)
+
+    # Briefly become a regular app so the panel can receive focus
+    AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
+    AppKit.NSApp.activateIgnoringOtherApps_(True)
+    alert.window().makeKeyAndOrderFront_(None)
+    field.becomeFirstResponder()
+
+    response = alert.runModal()
+    text = str(field.stringValue())
+
+    AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+    # NSAlertFirstButtonReturn = 1000
+    return response == 1000, text
 
 
 def _has_app_bundle() -> bool:
@@ -163,7 +196,7 @@ class TranscribeerApp(rumps.App):
         self._status_item = rumps.MenuItem("", callback=None)
         self._open_item = rumps.MenuItem("📁 Open Session Dir", callback=self._on_open)
         self._rename_item = rumps.MenuItem("✏️ Rename Session…", callback=self._on_rename)
-        self._prompt_item = rumps.MenuItem("Prompt: Default", callback=self._on_set_prompt)
+        self._prompt_item = rumps.MenuItem("Profile: Default", callback=self._on_set_prompt)
         self._stop_item = rumps.MenuItem("⏹ Stop Recording", callback=self._on_stop)
         self._start_item = rumps.MenuItem("Start Recording", callback=self._on_start)
         self._history_item = rumps.MenuItem("History…", callback=self._on_history)
@@ -238,6 +271,7 @@ class TranscribeerApp(rumps.App):
         self._stop_event.clear()
         sess = session.new_session(self.cfg.sessions_dir)
         self._sess = sess
+        self._set_recording()               # update UI on main thread before spawning
         self._thread = threading.Thread(target=self._run, args=(sess,), daemon=True)
         self._thread.start()
 
@@ -246,17 +280,15 @@ class TranscribeerApp(rumps.App):
             return
         from transcribeer.meta import read_meta, set_name
         current = read_meta(self._sess).get("name", "")
-        win = rumps.Window(
-            message="Supports any language, including Hebrew (עברית) and special characters:",
+        ok, text = _run_input_dialog(
             title="Name this session",
+            message="Supports any language, including Hebrew (עברית) and special characters:",
             default_text=current,
-            ok="Save",
-            cancel="Cancel",
-            dimensions=(300, 24),
+            ok_label="Save",
+            cancel_label="Cancel",
         )
-        response = win.run()
-        if response.clicked and response.text.strip():
-            set_name(self._sess, response.text.strip())
+        if ok and text.strip():
+            set_name(self._sess, text.strip())
         self._update_rename_label()
 
     def _update_rename_label(self) -> None:
@@ -275,17 +307,15 @@ class TranscribeerApp(rumps.App):
     def _pick_profile(self, profiles: list[str]) -> None:
         names = ", ".join(profiles)
         current = self._prompt_profile or "default"
-        win = rumps.Window(
-            message=f"Available profiles: {names}",
+        ok, text = _run_input_dialog(
             title="Summarization Profile",
+            message=f"Available profiles: {names}",
             default_text=current,
-            ok="Use",
-            cancel="Default",
-            dimensions=(280, 24),
+            ok_label="Use",
+            cancel_label="Default",
         )
-        resp = win.run()
-        if resp.clicked and resp.text.strip() in profiles:
-            chosen = resp.text.strip()
+        if ok and text.strip() in profiles:
+            chosen = text.strip()
             self._prompt_profile = None if chosen == "default" else chosen
         else:
             self._prompt_profile = None
@@ -293,7 +323,7 @@ class TranscribeerApp(rumps.App):
 
     def _update_prompt_label(self) -> None:
         label = self._prompt_profile or "Default"
-        self._prompt_item.title = f"Prompt: {label}"
+        self._prompt_item.title = f"Profile: {label}"
 
     def _on_stop(self, _=None):
         self._stop_event.set()
@@ -333,7 +363,6 @@ class TranscribeerApp(rumps.App):
         log(f"pipeline={cfg.pipeline_mode} lang={cfg.language} diarize={cfg.diarization}")
 
         # 1. Record
-        self._set_recording()
         log(f"capture-bin={cfg.capture_bin}")
         try:
             self._capture_proc = subprocess.Popen(
@@ -437,7 +466,7 @@ class TranscribeerApp(rumps.App):
         self._open_item.hidden = False
         self._rename_item.title = "✏️ Rename Session…"
         self._rename_item.hidden = False
-        self._prompt_item.title = "Prompt: Default"
+        self._prompt_item.title = "Profile: Default"
         self._prompt_item.hidden = False
         self._stop_item.hidden = False
         self._stop_item.set_callback(self._on_stop)
