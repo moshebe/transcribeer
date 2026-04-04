@@ -157,11 +157,13 @@ class TranscribeerApp(rumps.App):
         # Settings window controller (lazy — built on first open)
         self._settings_ctrl: SettingsWindowController | None = None
         self._history_window = None  # lazy-init on first click
+        self._prompt_profile: str | None = None  # None = default prompt
 
         # Menu items
         self._status_item = rumps.MenuItem("", callback=None)
         self._open_item = rumps.MenuItem("📁 Open Session Dir", callback=self._on_open)
         self._rename_item = rumps.MenuItem("✏️ Rename Session…", callback=self._on_rename)
+        self._prompt_item = rumps.MenuItem("Prompt: Default", callback=self._on_set_prompt)
         self._stop_item = rumps.MenuItem("⏹ Stop Recording", callback=self._on_stop)
         self._start_item = rumps.MenuItem("Start Recording", callback=self._on_start)
         self._history_item = rumps.MenuItem("History…", callback=self._on_history)
@@ -171,6 +173,7 @@ class TranscribeerApp(rumps.App):
             self._status_item,
             self._open_item,
             self._rename_item,
+            self._prompt_item,
             self._stop_item,
             None,
             self._start_item,
@@ -231,6 +234,7 @@ class TranscribeerApp(rumps.App):
     def _on_start(self, _=None):
         from transcribeer import session
         _cancel_zoom_notification()
+        self._prompt_profile = None          # reset per-session
         self._stop_event.clear()
         sess = session.new_session(self.cfg.sessions_dir)
         self._sess = sess
@@ -264,12 +268,44 @@ class TranscribeerApp(rumps.App):
         name = read_meta(self._sess).get("name", "")
         self._rename_item.title = f"✏️ {name}" if name else "✏️ Rename Session…"
 
+    def _on_set_prompt(self, _=None):
+        from transcribeer.prompts import list_profiles
+        self._pick_profile(list_profiles())
+
+    def _pick_profile(self, profiles: list[str]) -> None:
+        names = ", ".join(profiles)
+        current = self._prompt_profile or "default"
+        win = rumps.Window(
+            message=f"Available profiles: {names}",
+            title="Summarization Profile",
+            default_text=current,
+            ok="Use",
+            cancel="Default",
+            dimensions=(280, 24),
+        )
+        resp = win.run()
+        if resp.clicked and resp.text.strip() in profiles:
+            chosen = resp.text.strip()
+            self._prompt_profile = None if chosen == "default" else chosen
+        else:
+            self._prompt_profile = None
+        self._update_prompt_label()
+
+    def _update_prompt_label(self) -> None:
+        label = self._prompt_profile or "Default"
+        self._prompt_item.title = f"Prompt: {label}"
+
     def _on_stop(self, _=None):
         self._stop_event.set()
         proc = self._capture_proc
         if proc:
             proc.send_signal(signal.SIGINT)
         self._stop_item.set_callback(None)
+        if self.cfg.prompt_on_stop:
+            from transcribeer.prompts import list_profiles
+            profiles = list_profiles()
+            if len(profiles) > 1:   # custom profiles exist beyond "default"
+                self._pick_profile(profiles)
 
     def _on_open(self, _=None):
         if self._sess:
@@ -362,7 +398,9 @@ class TranscribeerApp(rumps.App):
 
         # 3. Summarize
         self._set_status("🤔 Summarizing…")
-        log(f"summarization started backend={cfg.llm_backend} model={cfg.llm_model}")
+        log(f"summarization started backend={cfg.llm_backend} model={cfg.llm_model} profile={self._prompt_profile!r}")
+        from transcribeer.prompts import load_prompt
+        prompt = load_prompt(self._prompt_profile)
         summary_err: str | None = None
         try:
             summary = sm.run(
@@ -370,6 +408,7 @@ class TranscribeerApp(rumps.App):
                 backend=cfg.llm_backend,
                 model=cfg.llm_model,
                 ollama_host=cfg.ollama_host,
+                prompt=prompt,
             )
             summary_path.write_text(summary, encoding="utf-8")
             log("summarization done")
@@ -386,6 +425,7 @@ class TranscribeerApp(rumps.App):
         self._status_item.hidden = True
         self._open_item.hidden = True
         self._rename_item.hidden = True
+        self._prompt_item.hidden = True
         self._stop_item.hidden = True
         self._start_item.hidden = False
 
@@ -397,6 +437,8 @@ class TranscribeerApp(rumps.App):
         self._open_item.hidden = False
         self._rename_item.title = "✏️ Rename Session…"
         self._rename_item.hidden = False
+        self._prompt_item.title = "Prompt: Default"
+        self._prompt_item.hidden = False
         self._stop_item.hidden = False
         self._stop_item.set_callback(self._on_stop)
         self._start_item.hidden = True
@@ -407,6 +449,7 @@ class TranscribeerApp(rumps.App):
         self._status_item.hidden = False
         self._open_item.hidden = False
         self._rename_item.hidden = True
+        self._prompt_item.hidden = False
         self._stop_item.hidden = True
         self._start_item.hidden = True
 
@@ -414,6 +457,7 @@ class TranscribeerApp(rumps.App):
         from transcribeer.meta import get_display_name
         self.title = "✓"
         display = get_display_name(self._sess) if self._sess else ""
+        self._prompt_item.hidden = True
         if summary_err:
             self._status_item.title = "✓ Done  (summary failed)"
             rumps.notification(
@@ -436,6 +480,7 @@ class TranscribeerApp(rumps.App):
         self._status_item.hidden = False
         self._open_item.hidden = self._sess is None
         self._rename_item.hidden = True
+        self._prompt_item.hidden = True
         self._stop_item.hidden = True
         self._start_item.hidden = False
         AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
