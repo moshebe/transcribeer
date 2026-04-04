@@ -149,6 +149,14 @@
            onblur="save('api_key', this.value)">
   </div>
   <div class="help-text row-hidden" id="api-key-help"></div>
+
+  <label class="toggle-row" onclick="onPromptOnStopChange()">
+    <div class="label-group">
+      <div class="title">Ask for prompt on stop</div>
+      <div class="subtitle">Show profile picker when you stop a recording</div>
+    </div>
+    <div class="toggle"><input id="chk-prompt-on-stop" type="checkbox"><span class="toggle-track"></span></div>
+  </label>
 </div>
 
 <div class="footer">Changes save automatically</div>
@@ -239,9 +247,17 @@ window.receive = function({action, payload}) {
     document.getElementById("inp-model").value = c.llm_model || "";
     document.getElementById("inp-ollama-host").value = c.ollama_host || "";
     document.getElementById("inp-api-key").value = c.api_key || "";
+    document.getElementById("chk-prompt-on-stop").checked = !!c.prompt_on_stop;
     updateBackendUI();
   }
 };
+
+function onPromptOnStopChange() {
+  setTimeout(() => {
+    const checked = document.getElementById("chk-prompt-on-stop").checked;
+    save("prompt_on_stop", checked ? "true" : "false");
+  }, 0);
+}
 
 updateDiarDesc();
 updateBackendUI();

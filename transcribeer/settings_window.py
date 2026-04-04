@@ -33,6 +33,7 @@ class SettingsWindowController(WebViewWindow):
             "llm_model":      cfg.llm_model,
             "ollama_host":    cfg.ollama_host,
             "api_key":        api_key,
+            "prompt_on_stop": cfg.prompt_on_stop,
         })
 
     def handle_message(self, action: str, payload: dict):
@@ -44,15 +45,16 @@ class SettingsWindowController(WebViewWindow):
     def _save_field(self, key: str, value: str) -> None:
         old = self._app.cfg
         kwargs = {
-            "language":      old.language,
-            "diarization":   old.diarization,
-            "num_speakers":  old.num_speakers,
-            "llm_backend":   old.llm_backend,
-            "llm_model":     old.llm_model,
-            "ollama_host":   old.ollama_host,
-            "sessions_dir":  old.sessions_dir,
-            "capture_bin":   old.capture_bin,
-            "pipeline_mode": old.pipeline_mode,
+            "language":       old.language,
+            "diarization":    old.diarization,
+            "num_speakers":   old.num_speakers,
+            "llm_backend":    old.llm_backend,
+            "llm_model":      old.llm_model,
+            "ollama_host":    old.ollama_host,
+            "sessions_dir":   old.sessions_dir,
+            "capture_bin":    old.capture_bin,
+            "pipeline_mode":  old.pipeline_mode,
+            "prompt_on_stop": old.prompt_on_stop,
         }
         if key == "api_key":
             if value.strip():
@@ -61,7 +63,9 @@ class SettingsWindowController(WebViewWindow):
                 except Exception:
                     pass
             return
-        if key in kwargs and value.strip():  # don't overwrite with empty string
+        if key == "prompt_on_stop":
+            kwargs["prompt_on_stop"] = value.strip() == "true"
+        elif key in kwargs and value.strip():
             kwargs[key] = value.strip()
         cfg_mod.save(cfg_mod.Config(**kwargs))
         self._app.cfg = cfg_mod.load()
