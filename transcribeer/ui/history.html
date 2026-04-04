@@ -198,6 +198,7 @@
       <span id="status-label" class="status-label"></span>
       <button class="btn" onclick="onOpenDir()">Open in Finder</button>
       <button id="btn-transcribe" class="btn" onclick="onTranscribe()">Re-transcribe</button>
+      <select id="sel-profile" class="btn" style="padding:3px 6px;font-size:11px;"></select>
       <button id="btn-summarize" class="btn" onclick="onSummarize()">Re-summarize</button>
     </div>
   </div>
@@ -266,6 +267,13 @@ function showContentTab(tab, d) {
 
 function switchContentTab(tab) { showContentTab(tab, _sessionData); }
 
+function populateProfiles(profiles) {
+  const sel = document.getElementById("sel-profile");
+  sel.innerHTML = (profiles || ["default"])
+    .map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`)
+    .join("");
+}
+
 // ── User actions ─────────────────────────────────────────────────────────────
 
 function selectSession(path) {
@@ -299,7 +307,8 @@ function onSummarize() {
   if (!_selected) return;
   document.getElementById("btn-summarize").disabled = true;
   document.getElementById("status-label").textContent = "Summarizing…";
-  bridge("summarize", {session: _selected});
+  const profile = document.getElementById("sel-profile").value;
+  bridge("summarize", {session: _selected, profile});
 }
 
 function onOpenDir() {
@@ -322,6 +331,7 @@ function escHtml(s) {
 
 window.receive = function({action, payload}) {
   if (action === "init") {
+    populateProfiles(payload.profiles || ["default"]);
     renderList(payload.sessions || []);
     // auto-select first session
     if (payload.sessions && payload.sessions.length) {

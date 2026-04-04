@@ -110,9 +110,11 @@ class HistoryWindow(WebViewWindow):
     # ── WebViewWindow hooks ───────────────────────────────────────────────────
 
     def on_load(self):
+        from transcribeer.prompts import list_profiles
         self._sessions = list_sessions(Path(self._cfg.sessions_dir))
         self.send("init", {
             "sessions": [_session_row(s) for s in self._sessions],
+            "profiles": list_profiles(),
         })
 
     def handle_message(self, action: str, payload: dict):
@@ -148,8 +150,9 @@ class HistoryWindow(WebViewWindow):
             ).start()
 
         elif action == "summarize" and sess:
+            profile = payload.get("profile") or None
             threading.Thread(
-                target=self._run_summarize, args=(sess,), daemon=True
+                target=self._run_summarize, args=(sess, profile), daemon=True
             ).start()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -180,17 +183,20 @@ class HistoryWindow(WebViewWindow):
             return
         self.send("done", {"step": "transcribe"})
 
-    def _run_summarize(self, sess: Path):
+    def _run_summarize(self, sess: Path, profile: str | None = None):
         from transcribeer import summarize as sm
+        from transcribeer.prompts import load_prompt
 
         self.send("progress", {"label": "Summarizing…", "pct": None})
         try:
             transcript = (sess / "transcript.txt").read_text(encoding="utf-8")
+            prompt = load_prompt(profile)
             summary = sm.run(
                 transcript=transcript,
                 backend=self._cfg.llm_backend,
                 model=self._cfg.llm_model,
                 ollama_host=self._cfg.ollama_host,
+                prompt=prompt,
             )
             (sess / "summary.md").write_text(summary, encoding="utf-8")
         except Exception as e:
