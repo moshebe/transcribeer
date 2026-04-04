@@ -1,4 +1,5 @@
-BIN_DIR   = $(HOME)/.transcribeer/bin
+GITHUB_USER  = moshebe
+BIN_DIR      = $(HOME)/.transcribeer/bin
 ENTITLEMENTS = capture/capture.entitlements.plist
 
 .PHONY: gui capture test-capture logs help
@@ -42,5 +43,5 @@ release: ## Tag a release and update the Homebrew formula SHA
 	  shasum -a 256 | awk '{print $$1}' > /tmp/release-sha256.txt
 	@echo "SHA256: $$(cat /tmp/release-sha256.txt)"
 	@echo "Update Formula/transcribeer.rb:"
-	@echo "  url: https://github.com/moshebeladev/transcribeer/archive/refs/tags/v$(VERSION).tar.gz"
+	@echo "  url: https://github.com/$(GITHUB_USER)/transcribeer/archive/refs/tags/v$(VERSION).tar.gz"
 	@echo "  sha256: $$(cat /tmp/release-sha256.txt)"
