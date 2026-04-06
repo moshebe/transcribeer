@@ -42,14 +42,21 @@ Transcribeer captures both sides of any call, transcribes with speaker labels, a
 
 ## Install
 
+**Homebrew (recommended):**
+
 ```bash
 brew tap moshebe/transcribeer https://github.com/moshebe/transcribeer
 brew install moshebe/transcribeer/transcribeer
 ```
 
-> **Note:** `brew tap moshebe/transcribeer` (without the URL) requires a separate
-> `homebrew-transcribeer` repository. Using the full URL taps the formula directly
-> from this repo.
+**Without Homebrew — via [uv](https://github.com/astral-sh/uv):**
+
+```bash
+uv tool install "transcribeer[gui,resemblyzer,openai,anthropic]"
+```
+
+Then copy `capture-bin` to `~/.transcribeer/bin/capture-bin` and set
+`capture_bin` in `~/.transcribeer/config.toml` (see Configuration below).
 
 ## Running Permanently (auto-start on login)
 
