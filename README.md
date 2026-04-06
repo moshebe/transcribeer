@@ -43,20 +43,24 @@ Transcribeer captures both sides of any call, transcribes with speaker labels, a
 ## Install
 
 ```bash
-brew tap moshebe/transcribeer
-brew install transcribeer
+brew tap moshebe/transcribeer https://github.com/moshebe/transcribeer
+brew install moshebe/transcribeer/transcribeer
 ```
+
+> **Note:** `brew tap moshebe/transcribeer` (without the URL) requires a separate
+> `homebrew-transcribeer` repository. Using the full URL taps the formula directly
+> from this repo.
 
 ## Running Permanently (auto-start on login)
 
 ```bash
-brew services start transcribeer
+brew services start moshebe/transcribeer/transcribeer
 ```
 
 This registers the menubar app as a launchd service so it launches automatically when you log in. To stop auto-start:
 
 ```bash
-brew services stop transcribeer
+brew services stop moshebe/transcribeer/transcribeer
 ```
 
 ## First Run
