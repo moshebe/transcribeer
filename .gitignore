@@ -24,6 +24,9 @@ skills-lock.json
 # App bundles (dev builds)
 gui/Transcribeer.app/
 
+# Obsidian plugin build output
+obsidian-plugin/main.js
+
 # Secrets / env
 .env
 .env.local

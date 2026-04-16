@@ -12,7 +12,8 @@ APP_CONTENTS = $(APP_BUNDLE)/Contents
 APP_MACOS    = $(APP_CONTENTS)/MacOS
 APP_RESOURCES = $(APP_CONTENTS)/Resources
 
-OBSIDIAN_VAULT = $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/kostyay
+# Override with: make obsidian-plugin OBSIDIAN_VAULT=/path/to/your/vault
+OBSIDIAN_VAULT ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/$(shell id -un)
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
 .PHONY: gui gui-build build-dev capture test-capture logs help dev dev-uninstall dev-restart obsidian-plugin
@@ -121,11 +122,12 @@ logs:
 
 # ── Obsidian plugin ───────────────────────────────────────────────────────────
 obsidian-plugin:
-	cd obsidian-plugin && npm run build
+	cd obsidian-plugin && npm install --silent && npm run build
 	mkdir -p "$(OBSIDIAN_PLUGIN_DIR)"
 	cp obsidian-plugin/main.js "$(OBSIDIAN_PLUGIN_DIR)/"
 	cp obsidian-plugin/manifest.json "$(OBSIDIAN_PLUGIN_DIR)/"
-	@echo "✓ Obsidian plugin installed — reload Obsidian to pick up changes"
+	@echo "✓ Obsidian plugin installed → $(OBSIDIAN_PLUGIN_DIR)"
+	@echo "  Reload Obsidian and enable the plugin in Settings → Community plugins"
 
 .PHONY: release
 release: ## Tag a release and update the Homebrew formula SHA
