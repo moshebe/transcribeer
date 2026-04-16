@@ -16,6 +16,13 @@ gui/.build/
 .worktrees/
 docs/
 test/
+.agents/
+.pi/
+.tickets/
+skills-lock.json
+
+# App bundles (dev builds)
+gui/Transcribeer.app/
 
 # Secrets / env
 .env
