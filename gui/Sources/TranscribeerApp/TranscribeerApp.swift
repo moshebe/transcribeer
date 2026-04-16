@@ -1,3 +1,4 @@
+import TranscribeerCore
 import os.log
 import SwiftUI
 import UserNotifications

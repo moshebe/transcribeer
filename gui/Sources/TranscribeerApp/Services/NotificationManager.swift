@@ -1,3 +1,4 @@
+import TranscribeerCore
 import UserNotifications
 
 /// Wraps UNUserNotificationCenter for transcription notifications.

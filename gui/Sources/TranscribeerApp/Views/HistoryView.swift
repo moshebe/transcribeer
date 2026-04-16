@@ -1,3 +1,4 @@
+import TranscribeerCore
 import SwiftUI
 
 struct HistoryView: View {

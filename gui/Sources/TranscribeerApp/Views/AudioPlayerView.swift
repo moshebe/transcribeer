@@ -1,3 +1,4 @@
+import TranscribeerCore
 import AVFoundation
 import SwiftUI
 

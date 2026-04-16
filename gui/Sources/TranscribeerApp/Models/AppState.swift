@@ -1,3 +1,4 @@
+import TranscribeerCore
 import Foundation
 
 /// Single source of truth for the app's pipeline state.

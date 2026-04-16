@@ -1,4 +1,5 @@
 import AppKit
+import TranscribeerCore
 
 /// Watches for Zoom meeting processes via NSWorkspace polling.
 @Observable

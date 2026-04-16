@@ -1,5 +1,6 @@
 import Foundation
 import os.log
+import TranscribeerCore
 
 private let logger = Logger(subsystem: "com.transcribeer", category: "pipeline")
 

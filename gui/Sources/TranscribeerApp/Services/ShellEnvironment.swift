@@ -1,3 +1,4 @@
+import TranscribeerCore
 import Foundation
 
 /// Load login shell environment so API keys from ~/.zshrc are available.

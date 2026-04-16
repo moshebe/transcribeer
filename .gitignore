@@ -1,6 +1,10 @@
 # macOS
 .DS_Store
 
+# Python
+__pycache__/
+*.pyc
+
 # Swift build artifacts
 gui/.build/
 
