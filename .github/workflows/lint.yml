@@ -1,0 +1,30 @@
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  swiftlint:
+    name: SwiftLint
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955  # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Install SwiftLint
+        run: |
+          if ! command -v swiftlint >/dev/null; then
+            brew update --quiet
+            brew install swiftlint
+          fi
+          swiftlint version
+
+      - name: Run SwiftLint
+        run: swiftlint lint --strict --reporter github-actions-logging

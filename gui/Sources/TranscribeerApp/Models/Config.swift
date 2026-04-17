@@ -4,14 +4,14 @@ import TOMLDecoder
 /// Mirrors ~/.transcribeer/config.toml.
 struct AppConfig: Equatable {
     var language: String = "auto"
-    var whisperModel: String = "large-v3-turbo"
+    var whisperModel: String = "openai_whisper-large-v3_turbo"
     var diarization: String = "pyannote"
     var numSpeakers: Int = 0
     var llmBackend: String = "ollama"
     var llmModel: String = "llama3"
     var ollamaHost: String = "http://localhost:11434"
     var sessionsDir: String = "~/.transcribeer/sessions"
-    var captureBin: String = AppConfig.defaultCaptureBin()
+    var captureBin: String = Self.defaultCaptureBin()
     var pipelineMode: String = "record+transcribe+summarize"
     var zoomAutoRecord: Bool = false
     var promptOnStop: Bool = true
@@ -34,6 +34,10 @@ struct AppConfig: Equatable {
 }
 
 // MARK: - TOML file structures for decoding
+//
+// Optional booleans here intentionally distinguish "absent" from "present and
+// false" during TOML decoding so we can fall back to the AppConfig default.
+// swiftlint:disable discouraged_optional_boolean
 
 private struct TOMLFile: Decodable {
     var pipeline: PipelineSection?
@@ -66,7 +70,28 @@ private struct PathsSection: Decodable {
     var capture_bin: String?
 }
 
+// swiftlint:enable discouraged_optional_boolean
+
 // MARK: - Load / Save
+
+extension AppConfig {
+    /// Migrate legacy short model names (e.g. `"large-v3-turbo"`) to the
+    /// canonical WhisperKit identifiers that match the HuggingFace repo folders.
+    /// WhisperKit resolves models via glob on the folder name, so the hyphenated
+    /// legacy names match nothing and throw `modelsUnavailable`.
+    static func canonicalWhisperModel(_ name: String) -> String {
+        switch name {
+        case "tiny": "openai_whisper-tiny"
+        case "base": "openai_whisper-base"
+        case "small": "openai_whisper-small"
+        case "medium": "openai_whisper-medium"
+        case "large-v2": "openai_whisper-large-v2"
+        case "large-v3": "openai_whisper-large-v3"
+        case "large-v3-turbo", "large-v3_turbo": "openai_whisper-large-v3_turbo"
+        default: name
+        }
+    }
+}
 
 enum ConfigManager {
     static let configPath: URL = {
@@ -76,28 +101,30 @@ enum ConfigManager {
 
     static func load() -> AppConfig {
         var cfg = AppConfig()
-        guard let data = try? Data(contentsOf: configPath) else { return cfg }
-        guard let toml = try? TOMLDecoder().decode(TOMLFile.self, from: data) else { return cfg }
+        guard
+            let data = try? Data(contentsOf: configPath),
+            let toml = try? TOMLDecoder().decode(TOMLFile.self, from: data)
+        else { return cfg }
 
-        if let p = toml.pipeline {
-            if let v = p.mode { cfg.pipelineMode = v }
-            if let v = p.zoom_auto_record { cfg.zoomAutoRecord = v }
+        if let pipeline = toml.pipeline {
+            cfg.pipelineMode = pipeline.mode ?? cfg.pipelineMode
+            cfg.zoomAutoRecord = pipeline.zoom_auto_record ?? cfg.zoomAutoRecord
         }
-        if let t = toml.transcription {
-            if let v = t.language { cfg.language = v }
-            if let v = t.model { cfg.whisperModel = v }
-            if let v = t.diarization { cfg.diarization = v }
-            if let v = t.num_speakers { cfg.numSpeakers = v }
+        if let transcription = toml.transcription {
+            cfg.language = transcription.language ?? cfg.language
+            cfg.whisperModel = transcription.model.map(AppConfig.canonicalWhisperModel) ?? cfg.whisperModel
+            cfg.diarization = transcription.diarization ?? cfg.diarization
+            cfg.numSpeakers = transcription.num_speakers ?? cfg.numSpeakers
         }
-        if let s = toml.summarization {
-            if let v = s.backend { cfg.llmBackend = v }
-            if let v = s.model { cfg.llmModel = v }
-            if let v = s.ollama_host { cfg.ollamaHost = v }
-            if let v = s.prompt_on_stop { cfg.promptOnStop = v }
+        if let summarization = toml.summarization {
+            cfg.llmBackend = summarization.backend ?? cfg.llmBackend
+            cfg.llmModel = summarization.model ?? cfg.llmModel
+            cfg.ollamaHost = summarization.ollama_host ?? cfg.ollamaHost
+            cfg.promptOnStop = summarization.prompt_on_stop ?? cfg.promptOnStop
         }
-        if let p = toml.paths {
-            if let v = p.sessions_dir { cfg.sessionsDir = v }
-            if let v = p.capture_bin { cfg.captureBin = v }
+        if let paths = toml.paths {
+            cfg.sessionsDir = paths.sessions_dir ?? cfg.sessionsDir
+            cfg.captureBin = paths.capture_bin ?? cfg.captureBin
         }
         return cfg
     }

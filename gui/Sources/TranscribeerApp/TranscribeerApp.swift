@@ -1,8 +1,5 @@
-import os.log
 import SwiftUI
 import UserNotifications
-
-private let logger = Logger(subsystem: "com.transcribeer", category: "app")
 
 @main
 struct TranscribeerApp: App {
@@ -12,12 +9,14 @@ struct TranscribeerApp: App {
     @State private var config = ConfigManager.load()
 
     var body: some Scene {
-        MenuBarExtra("Transcribeer", systemImage: runner.state.menuBarIcon) {
+        MenuBarExtra {
             menuContent
                 .onAppear { onFirstAppear() }
                 .onChange(of: zoomWatcher.inMeeting) { _, inMeeting in
                     handleZoomChange(inMeeting: inMeeting)
                 }
+        } label: {
+            MenuBarIcon(state: runner.state)
         }
         .menuBarExtraStyle(.menu)
 
@@ -60,9 +59,15 @@ struct TranscribeerApp: App {
             } else {
                 Text("📝 Transcribing…")
             }
+            Button("⏹ Stop") {
+                runner.cancelProcessing()
+            }
 
         case .summarizing:
             Text("🤔 Summarizing…")
+            Button("⏹ Stop") {
+                runner.cancelProcessing()
+            }
 
         case .done(let path):
             Text("✓ Done")

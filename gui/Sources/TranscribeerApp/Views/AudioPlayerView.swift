@@ -94,7 +94,9 @@ final class AudioPlayerVM {
 
 struct AudioPlayerView: View {
     let audioURL: URL
-    @State private var vm = AudioPlayerVM()
+    /// Shared player instance. Owned by the parent so siblings (e.g. the
+    /// transcript view's clickable timestamps) can drive playback too.
+    let vm: AudioPlayerVM
     @State private var isSeeking = false
 
     private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]

@@ -8,9 +8,18 @@ struct LabeledSegment {
     let text: String
 }
 
+/// A parsed transcript line: one speaker, a [start, end] window, cleaned text.
+/// Used by the transcript viewer to render clickable timestamps.
+struct TranscriptLine: Identifiable, Hashable {
+    let id: Int
+    let start: Double
+    let end: Double
+    let speaker: String
+    let text: String
+}
+
 /// Ports assign_speakers() and format_output() from Python transcribe.py.
 enum TranscriptFormatter {
-
     /// Assign a speaker label to each whisper segment based on overlap
     /// with diarization segments. Falls back to midpoint containment.
     static func assignSpeakers(
@@ -34,8 +43,10 @@ enum TranscriptFormatter {
             }
 
             return LabeledSegment(
-                start: ws.start, end: ws.end,
-                speaker: bestSpeaker, text: ws.text
+                start: ws.start,
+                end: ws.end,
+                speaker: bestSpeaker,
+                text: ws.text
             )
         }
     }
@@ -57,21 +68,115 @@ enum TranscriptFormatter {
         speakerMap["UNKNOWN"] = "???"
 
         // Merge consecutive same-speaker segments
-        var merged: [(start: Double, end: Double, speaker: String, text: String)] = []
+        var merged: [MergedLine] = []
         for seg in segments {
             let friendly = speakerMap[seg.speaker] ?? seg.speaker
             if let last = merged.last, last.speaker == friendly {
                 let prev = merged.removeLast()
-                merged.append((prev.start, seg.end, friendly, prev.text + " " + seg.text))
+                merged.append(MergedLine(
+                    start: prev.start,
+                    end: seg.end,
+                    speaker: friendly,
+                    text: prev.text + " " + seg.text
+                ))
             } else {
-                merged.append((seg.start, seg.end, friendly, seg.text))
+                merged.append(MergedLine(
+                    start: seg.start,
+                    end: seg.end,
+                    speaker: friendly,
+                    text: seg.text
+                ))
             }
         }
 
         return merged.map { seg in
             let ts = "[\(formatTimestamp(seg.start)) -> \(formatTimestamp(seg.end))]"
-            return "\(ts) \(seg.speaker): \(seg.text)"
+            return "\(ts) \(seg.speaker): \(sanitize(seg.text))"
         }.joined(separator: "\n")
+    }
+
+    /// Strip Whisper special tokens (e.g. `<|startoftranscript|>`, `<|he|>`,
+    /// `<|0.00|>`, `<|endoftext|>`) and collapse whitespace.
+    ///
+    /// New transcripts pass `skipSpecialTokens: true` so WhisperKit never emits
+    /// these tokens in the first place. This stays as a defense-in-depth /
+    /// migration step for older `transcript.txt` files written before that fix.
+    static func sanitize(_ text: String) -> String {
+        var cleaned = text.replacingOccurrences(
+            of: #"<\|[^|]*\|>"#,
+            with: " ",
+            options: .regularExpression,
+        )
+        cleaned = cleaned.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression,
+        )
+        return cleaned.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Parse a formatted transcript string back into structured lines.
+    ///
+    /// Accepts the `[MM:SS -> MM:SS] Speaker: text` shape produced by
+    /// `format(_:)`. Lines that don't match the header pattern are folded into
+    /// the previous line's text (so hard-wrapped paragraphs stay intact).
+    /// Supports `HH:MM:SS` timestamps too, for long recordings.
+    static func parse(_ transcript: String) -> [TranscriptLine] {
+        guard !transcript.isEmpty else { return [] }
+
+        let pattern = #"^\[(\d{1,2}(?::\d{2}){1,2}) -> (\d{1,2}(?::\d{2}){1,2})\]\s+([^:]+?):\s*(.*)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+
+        var lines: [TranscriptLine] = []
+        var nextID = 0
+        for raw in transcript.components(separatedBy: "\n") {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+            if let match = regex.firstMatch(in: trimmed, range: range), match.numberOfRanges == 5,
+               let startRange = Range(match.range(at: 1), in: trimmed),
+               let endRange = Range(match.range(at: 2), in: trimmed),
+               let speakerRange = Range(match.range(at: 3), in: trimmed),
+               let textRange = Range(match.range(at: 4), in: trimmed) {
+                lines.append(TranscriptLine(
+                    id: nextID,
+                    start: parseTimestamp(String(trimmed[startRange])),
+                    end: parseTimestamp(String(trimmed[endRange])),
+                    speaker: String(trimmed[speakerRange]).trimmingCharacters(in: .whitespaces),
+                    text: sanitize(String(trimmed[textRange])),
+                ))
+                nextID += 1
+            } else if var last = lines.popLast() {
+                let cleaned = sanitize(trimmed)
+                last = TranscriptLine(
+                    id: last.id,
+                    start: last.start,
+                    end: last.end,
+                    speaker: last.speaker,
+                    text: last.text.isEmpty ? cleaned : last.text + " " + cleaned,
+                )
+                lines.append(last)
+            }
+        }
+        return lines
+    }
+
+    /// Parse `MM:SS` or `HH:MM:SS` into seconds. Returns 0 on malformed input.
+    private static func parseTimestamp(_ string: String) -> Double {
+        let parts = string.split(separator: ":").compactMap { Int($0) }
+        switch parts.count {
+        case 2: return Double(parts[0] * 60 + parts[1])
+        case 3: return Double(parts[0] * 3600 + parts[1] * 60 + parts[2])
+        default: return 0
+        }
+    }
+
+    /// Internal accumulator for merging consecutive same-speaker segments.
+    private struct MergedLine {
+        var start: Double
+        var end: Double
+        var speaker: String
+        var text: String
     }
 
     /// Formats seconds as MM:SS.

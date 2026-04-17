@@ -10,10 +10,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("applicationDidFinishLaunching")
+        configureAppIcon()
         ShellEnvironment.load()
         NotificationManager.setup()
         UNUserNotificationCenter.current().delegate = self
         logger.info("startup complete")
+    }
+
+    private func configureAppIcon() {
+        guard let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns") else {
+            logger.error("AppIcon.icns missing from bundle resources")
+            return
+        }
+        guard let icon = NSImage(contentsOf: iconURL) else {
+            logger.error("Failed to load AppIcon.icns at \(iconURL.path)")
+            return
+        }
+        NSApp.applicationIconImage = icon
     }
 
     // MARK: - UNUserNotificationCenterDelegate

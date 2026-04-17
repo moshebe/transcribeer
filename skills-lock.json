@@ -6,6 +6,11 @@
       "sourceType": "github",
       "computedHash": "90504b29146ccd7e88d8ba7244c6c4e4d2b410fb21bdd4ce578f10583b158481"
     },
+    "swiftui-design-principles": {
+      "source": "arjitj2/swiftui-design-principles",
+      "sourceType": "github",
+      "computedHash": "2692dc771633b2915c1b75000009c1a9198af3e3f994ae46d175b48e008edc57"
+    },
     "swiftui-expert-skill": {
       "source": "avdlee/swiftui-agent-skill",
       "sourceType": "github",

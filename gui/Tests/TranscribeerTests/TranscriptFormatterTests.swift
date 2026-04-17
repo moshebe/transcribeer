@@ -2,7 +2,6 @@ import Testing
 @testable import TranscribeerApp
 
 struct TranscriptFormatterTests {
-
     // MARK: - formatTimestamp
 
     @Test("Formats seconds as MM:SS",
@@ -118,7 +117,116 @@ struct TranscriptFormatterTests {
 
     @Test("Empty segments → empty string")
     func emptySegments() {
-        #expect(TranscriptFormatter.format([]) == "")
+        #expect(TranscriptFormatter.format([]).isEmpty)
+    }
+
+    // MARK: - sanitize
+
+    @Test("sanitize strips Whisper special tokens")
+    func sanitizeStripsSpecialTokens() {
+        let dirty = "<|startoftranscript|><|he|><|transcribe|><|0.00|> hello<|15.60|><|endoftext|>"
+        #expect(TranscriptFormatter.sanitize(dirty) == "hello")
+    }
+
+    @Test("sanitize collapses whitespace and trims")
+    func sanitizeCollapsesWhitespace() {
+        #expect(TranscriptFormatter.sanitize("  foo   bar  \t baz  ") == "foo bar baz")
+    }
+
+    @Test("sanitize preserves normal text")
+    func sanitizeLeavesCleanText() {
+        #expect(TranscriptFormatter.sanitize("Hello world") == "Hello world")
+        #expect(TranscriptFormatter.sanitize("").isEmpty)
+    }
+
+    // MARK: - parse
+
+    @Test("parse round-trips format output")
+    func parseRoundTrip() {
+        let segments = [
+            LabeledSegment(start: 0, end: 30, speaker: "A", text: "First line"),
+            LabeledSegment(start: 30, end: 65, speaker: "B", text: "Second line"),
+        ]
+        let formatted = TranscriptFormatter.format(segments)
+        let lines = TranscriptFormatter.parse(formatted)
+        #expect(lines.count == 2)
+        #expect(lines[0].start == 0)
+        #expect(lines[0].end == 30)
+        #expect(lines[0].speaker == "Speaker 1")
+        #expect(lines[0].text == "First line")
+        #expect(lines[1].start == 30)
+        #expect(lines[1].end == 65)
+        #expect(lines[1].speaker == "Speaker 2")
+    }
+
+    @Test("parse strips special tokens from legacy transcripts")
+    func parseCleansLegacyTokens() {
+        let dirty = "[01:05 -> 03:12] Speaker 1: <|startoftranscript|><|he|><|0.00|> נאום<|15.60|><|endoftext|>"
+        let lines = TranscriptFormatter.parse(dirty)
+        #expect(lines.count == 1)
+        #expect(lines[0].start == 65)
+        #expect(lines[0].end == 3 * 60 + 12)
+        #expect(lines[0].speaker == "Speaker 1")
+        #expect(lines[0].text == "נאום")
+    }
+
+    @Test("parse supports HH:MM:SS timestamps")
+    func parseLongTimestamps() {
+        let input = "[1:02:03 -> 1:02:30] Speaker 1: hi"
+        let lines = TranscriptFormatter.parse(input)
+        #expect(lines.count == 1)
+        #expect(lines[0].start == 3723)
+        #expect(lines[0].end == 3750)
+    }
+
+    @Test("parse folds continuation lines into the previous row")
+    func parseFoldsContinuations() {
+        let input = """
+        [00:00 -> 00:05] Speaker 1: first
+        continued text
+        [00:05 -> 00:10] Speaker 2: reply
+        """
+        let lines = TranscriptFormatter.parse(input)
+        #expect(lines.count == 2)
+        #expect(lines[0].text == "first continued text")
+        #expect(lines[1].text == "reply")
+    }
+
+    @Test("parse empty input → empty result")
+    func parseEmpty() {
+        #expect(TranscriptFormatter.parse("").isEmpty)
+        #expect(TranscriptFormatter.parse("   \n  ").isEmpty)
+    }
+
+    // MARK: - RTL detection
+
+    @Test("RTL detection flags Hebrew text")
+    func rtlDetectsHebrew() {
+        #expect(TextDirection.isRightToLeft("שלום עולם"))
+    }
+
+    @Test("RTL detection flags Arabic text")
+    func rtlDetectsArabic() {
+        #expect(TextDirection.isRightToLeft("مرحبا بالعالم"))
+    }
+
+    @Test("RTL detection is false for English")
+    func rtlFalseForEnglish() {
+        #expect(!TextDirection.isRightToLeft("Hello world"))
+    }
+
+    @Test("RTL detection uses majority for mixed content")
+    func rtlMajorityVote() {
+        // Mostly Hebrew with a couple of English brand names → RTL.
+        #expect(TextDirection.isRightToLeft("זה הבדיקה של DataDog ו-PagerDuty במערכת"))
+        // Mostly English with a stray Hebrew word → LTR.
+        #expect(!TextDirection.isRightToLeft("Discussing the שלום incident in production today"))
+    }
+
+    @Test("RTL detection handles empty and punctuation-only strings")
+    func rtlHandlesEmpty() {
+        #expect(!TextDirection.isRightToLeft(""))
+        #expect(!TextDirection.isRightToLeft("... 12:34 !!!"))
     }
 
     @Test("Speaker numbering is stable (first-seen order)")

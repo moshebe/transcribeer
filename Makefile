@@ -15,7 +15,7 @@ APP_RESOURCES = $(APP_CONTENTS)/Resources
 OBSIDIAN_VAULT = $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/kostyay
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build build-dev capture test-capture logs help dev dev-uninstall dev-restart obsidian-plugin
+.PHONY: gui gui-build build-dev capture test-capture logs help dev dev-uninstall dev-restart obsidian-plugin lint lint-fix lint-strict e2e e2e-hebrew
 
 help:
 	@echo "dev targets:"
@@ -29,6 +29,23 @@ help:
 	@echo "  make test-capture   test capture-bin directly (5s recording)"
 	@echo "  make logs           stream transcribeer process logs"
 	@echo "  make obsidian-plugin  build + install Obsidian plugin into vault"
+	@echo "  make lint           run swiftlint (requires: brew install swiftlint)"
+	@echo "  make lint-fix       auto-fix swiftlint-correctable violations"
+	@echo "  make lint-strict    run swiftlint with --strict (warnings fail)"
+	@echo "  make e2e-hebrew     run the Hebrew loopback e2e test (needs capture-bin + ANTHROPIC_API_KEY)"
+
+# ── lint ───────────────────────────────────────────────────────────────────────────────
+lint:
+	@command -v swiftlint >/dev/null || { echo "swiftlint not installed. Run: brew install swiftlint"; exit 1; }
+	swiftlint lint --config $(PROJECT_DIR)/.swiftlint.yml
+
+lint-fix:
+	@command -v swiftlint >/dev/null || { echo "swiftlint not installed. Run: brew install swiftlint"; exit 1; }
+	swiftlint lint --fix --config $(PROJECT_DIR)/.swiftlint.yml
+
+lint-strict:
+	@command -v swiftlint >/dev/null || { echo "swiftlint not installed. Run: brew install swiftlint"; exit 1; }
+	swiftlint lint --strict --config $(PROJECT_DIR)/.swiftlint.yml
 
 # ── dev install + launch agent ────────────────────────────────────────────────
 define PLIST_CONTENT
@@ -68,6 +85,12 @@ export PLIST_CONTENT
 dev: capture build-dev
 	@mkdir -p $(LOG_DIR)
 	@launchctl bootout gui/$$(id -u)/$(PLIST_LABEL) 2>/dev/null || true
+	@# Wait for the previous instance to fully tear down; bootstrap errors with
+	@# EIO (5) if the service is still in the process of stopping.
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if ! launchctl print gui/$$(id -u)/$(PLIST_LABEL) >/dev/null 2>&1; then break; fi; \
+		sleep 0.5; \
+	done
 	@echo "$$PLIST_CONTENT" > $(PLIST_PATH)
 	launchctl bootstrap gui/$$(id -u) $(PLIST_PATH)
 	@echo "✓ transcribeer dev agent installed and running"
@@ -92,8 +115,24 @@ build-dev: gui-build
 	cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp
 	cp gui/Info.plist $(APP_CONTENTS)/Info.plist
 	@if [ -f assets/logo.png ]; then \
-		sips -s format icns assets/logo.png --out $(APP_RESOURCES)/AppIcon.icns 2>/dev/null || true; \
+		iconset_root="$$(mktemp -d /tmp/transcribeer-iconset.XXXXXX)"; \
+		iconset_dir="$$iconset_root/AppIcon.iconset"; \
+		mkdir -p "$$iconset_dir"; \
+		sips -z 16 16 assets/logo.png --out "$$iconset_dir/icon_16x16.png" >/dev/null; \
+		sips -z 32 32 assets/logo.png --out "$$iconset_dir/icon_16x16@2x.png" >/dev/null; \
+		sips -z 32 32 assets/logo.png --out "$$iconset_dir/icon_32x32.png" >/dev/null; \
+		sips -z 64 64 assets/logo.png --out "$$iconset_dir/icon_32x32@2x.png" >/dev/null; \
+		sips -z 128 128 assets/logo.png --out "$$iconset_dir/icon_128x128.png" >/dev/null; \
+		sips -z 256 256 assets/logo.png --out "$$iconset_dir/icon_128x128@2x.png" >/dev/null; \
+		sips -z 256 256 assets/logo.png --out "$$iconset_dir/icon_256x256.png" >/dev/null; \
+		sips -z 512 512 assets/logo.png --out "$$iconset_dir/icon_256x256@2x.png" >/dev/null; \
+		sips -z 512 512 assets/logo.png --out "$$iconset_dir/icon_512x512.png" >/dev/null; \
+		sips -z 1024 1024 assets/logo.png --out "$$iconset_dir/icon_512x512@2x.png" >/dev/null; \
+		rm -f $(APP_RESOURCES)/AppIcon.icns; \
+		iconutil --convert icns --output $(APP_RESOURCES)/AppIcon.icns "$$iconset_dir"; \
+		rm -rf "$$iconset_root"; \
 	fi
+	@touch $(APP_BUNDLE)
 	@echo "✓ app bundle: $(APP_BUNDLE)"
 
 gui: build-dev
@@ -114,6 +153,20 @@ test-capture:
 	@echo "Recording 5s to /tmp/transcribeer-test/test.wav — press Ctrl+C to stop early"
 	$(BIN_DIR)/capture-bin /tmp/transcribeer-test/test.wav 5
 	@ls -lh /tmp/transcribeer-test/test.wav
+
+# ── e2e: Hebrew audio-loopback test ──────────────────────────────────────────
+# Records system audio while playing the ivrit.ai Hebrew sample, transcribes
+# with the default WhisperKit model, then asks Claude to compare the result
+# to the reference transcript. Requires:
+#   - capture-bin installed (make capture) + Screen Recording TCC granted
+#   - $$ANTHROPIC_API_KEY in the environment
+# Extra env passthrough: LANGUAGE, MODEL, SAMPLE_WAV, CAPTURE_BIN, ARTIFACTS_DIR
+e2e-hebrew:
+	@test -x $(BIN_DIR)/capture-bin || { echo "capture-bin missing — run: make capture"; exit 1; }
+	@test -n "$$ANTHROPIC_API_KEY" || { echo "ANTHROPIC_API_KEY not set"; exit 1; }
+	bash $(PROJECT_DIR)/tests/e2e/hebrew-loopback.sh
+
+e2e: e2e-hebrew
 
 # ── logs ──────────────────────────────────────────────────────────────────────
 logs:

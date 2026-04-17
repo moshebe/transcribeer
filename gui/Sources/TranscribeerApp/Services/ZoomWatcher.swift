@@ -89,10 +89,8 @@ final class ZoomWatcher {
         var title = raw.trimmingCharacters(in: .whitespaces)
         if title.isEmpty { return nil }
 
-        for suffix in [" - Zoom", " | Zoom", " — Zoom", " – Zoom"] {
-            if title.hasSuffix(suffix) {
-                title = String(title.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
-            }
+        for suffix in [" - Zoom", " | Zoom", " — Zoom", " – Zoom"] where title.hasSuffix(suffix) {
+            title = String(title.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
         }
 
         if title.isEmpty || genericTitles.contains(title.lowercased()) {

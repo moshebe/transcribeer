@@ -3,12 +3,11 @@ import Testing
 @testable import TranscribeerApp
 
 struct AppConfigTests {
-
     @Test("Default config has expected values")
     func defaults() {
         let cfg = AppConfig()
         #expect(cfg.language == "auto")
-        #expect(cfg.whisperModel == "large-v3-turbo")
+        #expect(cfg.whisperModel == "openai_whisper-large-v3_turbo")
         #expect(cfg.diarization == "pyannote")
         #expect(cfg.numSpeakers == 0)
         #expect(cfg.llmBackend == "ollama")
@@ -16,8 +15,8 @@ struct AppConfigTests {
         #expect(cfg.ollamaHost == "http://localhost:11434")
         #expect(cfg.sessionsDir == "~/.transcribeer/sessions")
         #expect(cfg.pipelineMode == "record+transcribe+summarize")
-        #expect(cfg.zoomAutoRecord == false)
-        #expect(cfg.promptOnStop == true)
+        #expect(!cfg.zoomAutoRecord)
+        #expect(cfg.promptOnStop)
     }
 
     @Test("expandedSessionsDir resolves tilde to home directory")
@@ -41,6 +40,17 @@ struct AppConfigTests {
         cfg.captureBin = "~/.transcribeer/bin/capture-bin"
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         #expect(cfg.expandedCaptureBin == "\(home)/.transcribeer/bin/capture-bin")
+    }
+
+    @Test("canonicalWhisperModel migrates legacy short names")
+    func canonicalWhisperModel() {
+        #expect(AppConfig.canonicalWhisperModel("large-v3-turbo") == "openai_whisper-large-v3_turbo")
+        #expect(AppConfig.canonicalWhisperModel("large-v3") == "openai_whisper-large-v3")
+        #expect(AppConfig.canonicalWhisperModel("base") == "openai_whisper-base")
+        // Already-canonical names pass through unchanged.
+        #expect(AppConfig.canonicalWhisperModel("openai_whisper-large-v3_turbo") == "openai_whisper-large-v3_turbo")
+        // Unknown names pass through so custom repos keep working.
+        #expect(AppConfig.canonicalWhisperModel("distil-whisper_distil-large-v3") == "distil-whisper_distil-large-v3")
     }
 
     @Test("Equatable conformance compares all fields")

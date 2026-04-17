@@ -48,12 +48,25 @@ uv run transcribeer-gui
 uv run transcribeer --help
 ```
 
+## Linting Swift
+
+The macOS GUI is linted with [SwiftLint](https://github.com/realm/SwiftLint). Config lives in `.swiftlint.yml`.
+
+```bash
+brew install swiftlint   # one-time
+make lint                # warn on violations, fail on errors
+make lint-fix            # auto-fix correctable violations
+make lint-strict         # treat warnings as errors (CI mode)
+```
+
+CI runs `swiftlint lint` on every PR (`.github/workflows/lint.yml`).
+
 ## Pull Request Guidelines
 
 - Use [conventional commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `chore:`
 - One concern per PR — keep diffs focused
 - Run `uv run pytest tests/ -q` before opening a PR
-- For Swift changes, run the Swift tests: `cd capture && swift test`
+- For Swift changes, run the Swift tests: `cd capture && swift test` and `make lint`
 
 ## Reporting Issues
 

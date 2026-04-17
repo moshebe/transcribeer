@@ -16,33 +16,26 @@ enum AppState: Equatable {
 
     var isBusy: Bool {
         switch self {
-        case .recording, .transcribing, .summarizing: return true
-        default: return false
-        }
-    }
-
-    var menuBarIcon: String {
-        switch self {
-        case .idle: return "mic"
-        case .recording: return "record.circle.fill"
-        case .transcribing, .summarizing: return "ellipsis.circle"
-        case .done: return "checkmark.circle"
-        case .error: return "exclamationmark.triangle"
+        case .recording, .transcribing, .summarizing: true
+        default: false
         }
     }
 
     var statusText: String {
         switch self {
-        case .idle: return ""
-        case .recording(let start):
-            let elapsed = Int(Date().timeIntervalSince(start))
-            let m = elapsed / 60
-            let s = elapsed % 60
-            return String(format: "⏺ Recording  %02d:%02d", m, s)
-        case .transcribing: return "📝 Transcribing…"
-        case .summarizing: return "🤔 Summarizing…"
-        case .done: return "✓ Done"
-        case .error(let msg): return "⚠ \(msg)"
+        case .idle: ""
+        case .recording(let start): Self.recordingText(from: start)
+        case .transcribing: "📝 Transcribing…"
+        case .summarizing: "🤔 Summarizing…"
+        case .done: "✓ Done"
+        case .error(let msg): "⚠ \(msg)"
         }
+    }
+
+    private static func recordingText(from start: Date) -> String {
+        let elapsed = Int(Date().timeIntervalSince(start))
+        let minutes = elapsed / 60
+        let seconds = elapsed % 60
+        return String(format: "⏺ Recording  %02d:%02d", minutes, seconds)
     }
 }

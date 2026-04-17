@@ -3,7 +3,6 @@ import Testing
 @testable import TranscribeerApp
 
 struct AppStateTests {
-
     // MARK: - isRecording
 
     @Test("isRecording is true only for .recording state",
@@ -34,26 +33,11 @@ struct AppStateTests {
         #expect(state.isBusy == expected)
     }
 
-    // MARK: - menuBarIcon
-
-    @Test("Each state maps to a distinct SF Symbol",
-          arguments: [
-              (AppState.idle, "mic"),
-              (.recording(startTime: .now), "record.circle.fill"),
-              (.transcribing, "ellipsis.circle"),
-              (.summarizing, "ellipsis.circle"),
-              (.done(sessionPath: "/tmp"), "checkmark.circle"),
-              (.error("fail"), "exclamationmark.triangle"),
-          ])
-    func menuBarIcon(state: AppState, expected: String) {
-        #expect(state.menuBarIcon == expected)
-    }
-
     // MARK: - statusText
 
     @Test("Idle state has empty status text")
     func idleStatusText() {
-        #expect(AppState.idle.statusText == "")
+        #expect(AppState.idle.statusText.isEmpty)
     }
 
     @Test("Transcribing shows pencil emoji")
