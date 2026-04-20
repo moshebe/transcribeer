@@ -52,12 +52,52 @@ def record(
     console.print(f"[green]Saved:[/green] {out}")
 
 
+def _apply_perf_overrides(
+    cfg_perf,
+    *,
+    threads: Optional[int],
+    vad: Optional[bool],
+    batched: Optional[bool],
+    batch_size: Optional[int],
+    beam_size: Optional[int],
+    compute_type: Optional[str],
+):
+    """Return a PerformanceConfig with any non-None override applied over cfg_perf."""
+    from dataclasses import replace
+    updates: dict = {}
+    if threads is not None:
+        updates["cpu_threads"] = max(0, threads)
+    if vad is not None:
+        updates["vad_filter"] = vad
+    if batched is not None:
+        updates["batched"] = batched
+    if batch_size is not None:
+        updates["batch_size"] = max(1, batch_size)
+    if beam_size is not None:
+        updates["beam_size"] = max(1, beam_size)
+    if compute_type is not None:
+        from transcribeer.config import VALID_COMPUTE_TYPES
+        if compute_type not in VALID_COMPUTE_TYPES:
+            raise typer.BadParameter(
+                f"Invalid --compute-type {compute_type!r}. "
+                f"Choose from: {', '.join(VALID_COMPUTE_TYPES)}."
+            )
+        updates["compute_type"] = compute_type
+    return replace(cfg_perf, **updates) if updates else cfg_perf
+
+
 @app.command()
 def transcribe(
     audio: Path = typer.Argument(..., help="WAV (or any audio) file to transcribe."),
     lang: Optional[str] = typer.Option(None, "--lang", help="Language: he, en, auto. Overrides config."),
     no_diarize: bool = typer.Option(False, "--no-diarize", help="Skip speaker diarization."),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="Output .txt path."),
+    threads: Optional[int] = typer.Option(None, "--threads", min=0, help="CPU threads (0 = auto-detect)."),
+    vad: Optional[bool] = typer.Option(None, "--vad/--no-vad", help="Skip silence for faster processing."),
+    batched: Optional[bool] = typer.Option(None, "--batched/--no-batched", help="Use BatchedInferencePipeline (experimental, 2-4x faster)."),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size", min=1, help="Batch size when --batched."),
+    beam_size: Optional[int] = typer.Option(None, "--beam-size", min=1, help="Beam search width (1 = fastest)."),
+    compute_type: Optional[str] = typer.Option(None, "--compute-type", help="int8, int8_float32, or float32."),
 ):
     """Transcribe an audio file with speaker diarization."""
     from transcribeer import transcribe as tx
@@ -66,9 +106,20 @@ def transcribe(
     language = lang or cfg.language
     diarize_backend = "none" if no_diarize else cfg.diarization
     out_path = out or audio.with_suffix(".diarized.txt")
+    perf = _apply_perf_overrides(
+        cfg.performance,
+        threads=threads, vad=vad, batched=batched,
+        batch_size=batch_size, beam_size=beam_size, compute_type=compute_type,
+    )
 
     console.print(f"[bold]Transcribing:[/bold] {audio}")
     console.print(f"  Language: {language}  |  Diarization: {diarize_backend}")
+    _threads_label = perf.cpu_threads or f"auto ({tx.detect_cpu_threads()})"
+    console.print(
+        f"  Threads: {_threads_label}  |  Compute: {perf.compute_type}  |  "
+        f"VAD: {'on' if perf.vad_filter else 'off'}  |  "
+        f"Batched: {'on' if perf.batched else 'off'}  |  Beam: {perf.beam_size}"
+    )
 
     with console.status("[cyan]Preparing...[/cyan]") as status:
         def _prog(step: str, pct: float | None = None) -> None:
@@ -86,6 +137,7 @@ def transcribe(
             num_speakers=cfg.num_speakers,
             out_path=out_path,
             on_progress=_prog,
+            performance=perf,
         )
     console.print(f"[green]Transcript:[/green] {out_path}")
 
@@ -192,6 +244,7 @@ def run(
                 num_speakers=cfg.num_speakers,
                 out_path=transcript_path,
                 on_progress=_prog,
+                performance=cfg.performance,
             )
         except ValueError as e:
             console.print(f"[red]Transcription failed:[/red] {e}")

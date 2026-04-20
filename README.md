@@ -103,6 +103,30 @@ model = "llama3"
 ollama_host = "http://localhost:11434"
 ```
 
+### Performance tuning (optional)
+
+Everything under `[transcription.performance]` is optional — if omitted, the
+safe defaults below are used. Tune these when transcription feels slow or when
+you want to trade accuracy for speed:
+
+```toml
+[transcription.performance]
+cpu_threads  = 0       # 0 = auto-detect (P-cores on Apple Silicon, phys cores elsewhere), capped at 8
+compute_type = "int8"  # int8 (fastest) | int8_float32 (slightly better quality) | float32 (slowest)
+vad_filter   = true    # skip silence — typically 1.5–3× faster on conversational audio
+batched      = false   # experimental BatchedInferencePipeline — 2–4× faster, higher peak memory
+batch_size   = 8       # only applies when batched = true
+beam_size    = 5       # lower = faster but less accurate (1 for max speed)
+```
+
+All knobs are also available as CLI flags on `transcribeer transcribe` for
+ad-hoc experiments without touching the config:
+
+```bash
+transcribeer transcribe meeting.m4a --threads 6 --no-vad --beam-size 1
+transcribeer transcribe meeting.m4a --batched --batch-size 16
+```
+
 ### API Keys
 
 API keys for OpenAI and Anthropic are stored in the **macOS Keychain** — never in the config file. Enter them once via **Settings** in the menubar app; they are saved securely and retrieved automatically on each run.
