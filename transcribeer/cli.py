@@ -91,6 +91,7 @@ def transcribe(
     audio: Path = typer.Argument(..., help="WAV (or any audio) file to transcribe."),
     lang: Optional[str] = typer.Option(None, "--lang", help="Language: he, en, auto. Overrides config."),
     no_diarize: bool = typer.Option(False, "--no-diarize", help="Skip speaker diarization."),
+    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", min=0, help="Number of distinct speakers. Overrides config; 0 = auto-detect (pyannote only)."),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="Output .txt path."),
     threads: Optional[int] = typer.Option(None, "--threads", min=0, help="CPU threads (0 = auto-detect)."),
     vad: Optional[bool] = typer.Option(None, "--vad/--no-vad", help="Skip silence for faster processing."),
@@ -106,6 +107,10 @@ def transcribe(
     language = lang or cfg.language
     diarize_backend = "none" if no_diarize else cfg.diarization
     out_path = out or audio.with_suffix(".diarized.txt")
+    effective_speakers = (
+        None if num_speakers == 0
+        else (num_speakers if num_speakers is not None else cfg.num_speakers)
+    )
     perf = _apply_perf_overrides(
         cfg.performance,
         threads=threads, vad=vad, batched=batched,
@@ -134,7 +139,7 @@ def transcribe(
             audio_path=audio,
             language=language,
             diarize_backend=diarize_backend,
-            num_speakers=cfg.num_speakers,
+            num_speakers=effective_speakers,
             out_path=out_path,
             on_progress=_prog,
             performance=perf,
@@ -192,6 +197,7 @@ def run(
     duration: Optional[int] = typer.Option(None, "--duration", "-d", help="Recording duration in seconds."),
     lang: Optional[str] = typer.Option(None, "--lang"),
     no_diarize: bool = typer.Option(False, "--no-diarize"),
+    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", min=0, help="Number of distinct speakers. Overrides config."),
     no_summarize: bool = typer.Option(False, "--no-summarize"),
     profile: Optional[str] = typer.Option(None, "--profile", help="Named prompt profile from ~/.transcribeer/prompts/."),
 ):
@@ -199,6 +205,10 @@ def run(
     from transcribeer import capture, transcribe as tx, summarize as sm, session
     from transcribeer.prompts import load_prompt
     cfg = _cfg()
+    effective_speakers = (
+        None if num_speakers == 0
+        else (num_speakers if num_speakers is not None else cfg.num_speakers)
+    )
 
     sess = session.new_session(sessions_dir=cfg.sessions_dir)
     audio_path = sess / "audio.wav"
@@ -241,7 +251,7 @@ def run(
                 audio_path=audio_path,
                 language=language,
                 diarize_backend=diarize_backend,
-                num_speakers=cfg.num_speakers,
+                num_speakers=effective_speakers,
                 out_path=transcript_path,
                 on_progress=_prog,
                 performance=cfg.performance,
