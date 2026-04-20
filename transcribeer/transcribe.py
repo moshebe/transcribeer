@@ -33,6 +33,47 @@ def ensure_wav(audio_path: Path) -> Path:
     return wav_path
 
 
+def _has_audible_signal(
+    wav_path: Path,
+    peak_threshold: float = 0.001,
+    probe_seconds: float = 30.0,
+) -> bool:
+    """Cheaply detect whether a recording contains any audible signal.
+
+    Reads up to ``probe_seconds`` from the start of the file and returns False
+    iff the peak absolute amplitude is below ``peak_threshold`` (default
+    0.001 ≈ -60 dBFS — just above digital dither/noise floor; below this the
+    file is effectively pure silence even by noise-floor standards).
+
+    Designed for the silent-system-audio case: ScreenCaptureKit happily
+    produces a well-formed WAV of zero-valued samples when nothing is playing,
+    and the WAV-header size check in ``run()`` passes it through. This
+    check catches that much earlier, with an actionable error — while
+    staying permissive enough to accept quiet-but-real recordings such as
+    distant-mic speech (~-40 dBFS) and whispered dialogue (~-50 dBFS).
+    """
+    try:
+        import soundfile as sf  # ships with resemblyzer / librosa
+        import numpy as np
+    except ImportError:
+        # If the optional deps are missing, don't block transcription.
+        return True
+
+    try:
+        with sf.SoundFile(str(wav_path)) as f:
+            if f.frames == 0:
+                return False
+            frames_to_read = min(int(probe_seconds * f.samplerate), f.frames)
+            samples = f.read(frames=frames_to_read, dtype="float32", always_2d=False)
+    except (OSError, RuntimeError):
+        # Unreadable WAV — let the real decoder surface the error.
+        return True
+
+    if samples.size == 0:
+        return False
+    return float(np.max(np.abs(samples))) >= peak_threshold
+
+
 def detect_cpu_threads(cap: int = _AUTO_THREADS_CAP) -> int:
     """Return optimal CPU thread count for Whisper inference on this machine.
 
@@ -184,6 +225,19 @@ def run(
             f"Recording produced no audio ({wav_path.stat().st_size} bytes). "
             "Check that 'Screen & System Audio Recording' is enabled in "
             "System Settings → Privacy & Security and that system audio is playing."
+        )
+
+    # A well-formed but silent WAV (e.g. system-audio capture with nothing
+    # playing) would otherwise waste 5+ minutes of CPU producing an empty
+    # transcript. Catch it here with an actionable message.
+    if not _has_audible_signal(wav_path):
+        raise ValueError(
+            f"Recording appears silent (no audible signal in first 30 seconds of "
+            f"{wav_path.name}). Common causes:\n"
+            "  • System-audio capture with nothing playing through speakers.\n"
+            "  • 'Screen & System Audio Recording' permission revoked mid-session.\n"
+            "  • Microphone input muted or wrong device selected.\n"
+            "Play the file in a media player to confirm, then re-record."
         )
 
     _prog("diarizing")

@@ -88,6 +88,7 @@ def test_language_auto_maps_to_none():
     mock_model = _make_mock_model()
 
     with patch("transcribeer.transcribe._load_whisper_model", return_value=mock_model), \
+         patch("transcribeer.transcribe._has_audible_signal", return_value=True), \
          patch("transcribeer.diarize.run", return_value=[]), \
          patch("transcribeer.transcribe.ensure_wav", return_value=wav):
 
@@ -187,6 +188,7 @@ def test_run_applies_performance_defaults_vad_on():
     mock_model = _make_mock_model()
 
     with patch("transcribeer.transcribe._load_whisper_model", return_value=mock_model), \
+         patch("transcribeer.transcribe._has_audible_signal", return_value=True), \
          patch("transcribeer.diarize.run", return_value=[]), \
          patch("transcribeer.transcribe.ensure_wav", return_value=wav):
         from transcribeer.transcribe import run
@@ -214,6 +216,7 @@ def test_run_respects_vad_off():
     perf = PerformanceConfig(vad_filter=False, beam_size=1)
 
     with patch("transcribeer.transcribe._load_whisper_model", return_value=mock_model), \
+         patch("transcribeer.transcribe._has_audible_signal", return_value=True), \
          patch("transcribeer.diarize.run", return_value=[]), \
          patch("transcribeer.transcribe.ensure_wav", return_value=wav):
         from transcribeer.transcribe import run
@@ -243,6 +246,7 @@ def test_run_batched_uses_pipeline_wrapper():
     perf = PerformanceConfig(batched=True, batch_size=4, vad_filter=False)
 
     with patch("transcribeer.transcribe._load_whisper_model", return_value=mock_model), \
+         patch("transcribeer.transcribe._has_audible_signal", return_value=True), \
          patch("faster_whisper.BatchedInferencePipeline", mock_pipeline_cls), \
          patch("transcribeer.diarize.run", return_value=[]), \
          patch("transcribeer.transcribe.ensure_wav", return_value=wav):
@@ -295,3 +299,108 @@ def test_load_whisper_model_auto_threads_uses_detector():
         _load_whisper_model(perf)
 
     assert fake_ctor.call_args.kwargs["cpu_threads"] == 7
+
+
+# -----------------------------------------------------------------------------
+# Silent-audio detection
+# -----------------------------------------------------------------------------
+
+
+def _write_wav(path: Path, samples, sample_rate: int = 16000) -> None:
+    """Write a mono float32 numpy array as 16-bit PCM WAV."""
+    import soundfile as sf
+    sf.write(str(path), samples, sample_rate, subtype="PCM_16")
+
+
+def test_has_audible_signal_detects_silent_file(tmp_path):
+    """All-zero samples → False (silent)."""
+    import numpy as np
+    wav = tmp_path / "silent.wav"
+    _write_wav(wav, np.zeros(16000 * 5, dtype="float32"))  # 5s of silence
+
+    from transcribeer.transcribe import _has_audible_signal
+    assert _has_audible_signal(wav) is False
+
+
+def test_has_audible_signal_detects_real_audio(tmp_path):
+    """Non-trivial amplitude → True."""
+    import numpy as np
+    wav = tmp_path / "speech.wav"
+    # Sine wave at -10 dBFS — well above any silence threshold
+    t = np.linspace(0, 5, 16000 * 5, endpoint=False, dtype="float32")
+    samples = (0.3 * np.sin(2 * np.pi * 440 * t)).astype("float32")
+    _write_wav(wav, samples)
+
+    from transcribeer.transcribe import _has_audible_signal
+    assert _has_audible_signal(wav) is True
+
+
+def test_has_audible_signal_tolerates_quiet_speech(tmp_path):
+    """Quiet-but-audible speech (~-40 dBFS) still returns True."""
+    import numpy as np
+    wav = tmp_path / "quiet.wav"
+    t = np.linspace(0, 5, 16000 * 5, endpoint=False, dtype="float32")
+    # 0.01 ≈ -40 dBFS — quieter than normal speech but clearly signal
+    samples = (0.01 * np.sin(2 * np.pi * 220 * t)).astype("float32")
+    _write_wav(wav, samples)
+
+    from transcribeer.transcribe import _has_audible_signal
+    assert _has_audible_signal(wav) is True
+
+
+def test_has_audible_signal_accepts_whispered_speech(tmp_path):
+    """Whispered speech (~-54 dBFS, peak 0.002) must pass the default threshold.
+
+    This is the case the original 0.005 threshold false-positive-rejected.
+    After lowering to 0.001, legitimate quiet audio survives while pure
+    silence is still caught.
+    """
+    import numpy as np
+    wav = tmp_path / "whisper.wav"
+    t = np.linspace(0, 5, 16000 * 5, endpoint=False, dtype="float32")
+    samples = (0.002 * np.sin(2 * np.pi * 220 * t)).astype("float32")
+    _write_wav(wav, samples)
+
+    from transcribeer.transcribe import _has_audible_signal
+    assert _has_audible_signal(wav) is True
+
+
+def test_has_audible_signal_rejects_dither_noise(tmp_path):
+    """Dither-level noise (below 0.001 threshold) is still considered silent.
+
+    PCM_16 quantisation dither sits around 1/32767 ≈ 3e-5 — well below 0.001.
+    An all-quiet file at that level shouldn't pass as ``audible``.
+    """
+    import numpy as np
+    wav = tmp_path / "dither.wav"
+    # Deterministic peak = 5e-4 — well below the 1e-3 threshold
+    t = np.linspace(0, 5, 16000 * 5, endpoint=False, dtype="float32")
+    samples = (5e-4 * np.sin(2 * np.pi * 220 * t)).astype("float32")
+    _write_wav(wav, samples)
+
+    from transcribeer.transcribe import _has_audible_signal
+    assert _has_audible_signal(wav) is False
+
+
+def test_has_audible_signal_handles_empty_wav(tmp_path):
+    """Zero-frame WAV returns False without raising."""
+    import numpy as np
+    wav = tmp_path / "empty.wav"
+    _write_wav(wav, np.zeros(0, dtype="float32"))
+
+    from transcribeer.transcribe import _has_audible_signal
+    assert _has_audible_signal(wav) is False
+
+
+def test_run_raises_on_silent_recording(tmp_path):
+    """run() bails early with an actionable error on a silent WAV."""
+    import numpy as np
+    wav = tmp_path / "silent.wav"
+    _write_wav(wav, np.zeros(16000 * 5, dtype="float32"))
+
+    with patch("transcribeer.diarize.run", return_value=[]), \
+         patch("transcribeer.transcribe.ensure_wav", return_value=wav):
+        from transcribeer.transcribe import run
+        with pytest.raises(ValueError, match="silent"):
+            run(wav, language="auto", diarize_backend="none",
+                num_speakers=None, out_path=tmp_path / "out.txt")
