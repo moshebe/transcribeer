@@ -93,7 +93,7 @@ public enum AudioValidationError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .silent(let url, let probeSeconds):
+        case let .silent(url, probeSeconds):
             let seconds = Int(probeSeconds.rounded())
             return """
                 Recording appears silent (no audible signal in first \(seconds) seconds \

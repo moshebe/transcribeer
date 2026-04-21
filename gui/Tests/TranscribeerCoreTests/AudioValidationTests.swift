@@ -70,10 +70,10 @@ struct AudioValidationTests {
     @Test(
         "Peak-amplitude threshold at ~-60 dBFS",
         arguments: [
-            (amplitude: Float(0.0),    expected: false, label: "pure silence / zero samples"),
-            (amplitude: Float(0.3),    expected: true,  label: "normal speech ≈ -10 dBFS"),
-            (amplitude: Float(0.01),   expected: true,  label: "distant-mic speech ≈ -40 dBFS"),
-            (amplitude: Float(0.002),  expected: true,  label: "whispered ≈ -54 dBFS"),
+            (amplitude: Float(0.0), expected: false, label: "pure silence / zero samples"),
+            (amplitude: Float(0.3), expected: true, label: "normal speech ≈ -10 dBFS"),
+            (amplitude: Float(0.01), expected: true, label: "distant-mic speech ≈ -40 dBFS"),
+            (amplitude: Float(0.002), expected: true, label: "whispered ≈ -54 dBFS"),
             (amplitude: Float(0.0005), expected: false, label: "dither-level ≈ -66 dBFS"),
         ]
     )
