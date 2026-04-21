@@ -106,10 +106,10 @@ final class PipelineRunner {
         let recordResult = await CaptureService.record(to: audioPath, duration: nil)
 
         switch recordResult {
-        case .permissionDenied:
-            let err = "Grant Screen Recording in System Settings → Privacy"
-            logger.log(err)
-            state = .error(err)
+        case .permissionDenied(let detail):
+            logger.log("capture failed: \(detail)")
+            state = .error(detail)
+            NotificationManager.notifyError(detail)
             return
         case .error(let err):
             logger.log("capture failed: \(err)")
