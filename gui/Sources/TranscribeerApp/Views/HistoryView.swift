@@ -13,10 +13,14 @@ struct HistoryView: View {
     @State private var statusText = ""
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detailPanel
+        VStack(spacing: 0) {
+            controlBar
+            Divider()
+            NavigationSplitView {
+                sidebar
+            } detail: {
+                detailPanel
+            }
         }
         .frame(minWidth: 800, minHeight: 500)
         .onAppear {
@@ -26,6 +30,114 @@ struct HistoryView: View {
         }
         .onDisappear {
             DockVisibility.windowDidDisappear()
+        }
+        .onChange(of: runner.state) { _, newState in
+            handleStateChange(newState)
+        }
+    }
+
+    // MARK: - Control bar
+    //
+    // Surfaces the record/stop/cancel controls inside the window, so users
+    // without the menubar icon visible (e.g. when other menu-bar extras push
+    // ours behind the notch on MacBook Pros) still have a first-class way to
+    // drive the pipeline. The menubar dropdown keeps working exactly as
+    // before; this is an additive surface for the same `PipelineRunner`
+    // state machine.
+
+    private var controlBar: some View {
+        HStack(spacing: 12) {
+            stateIndicator
+            Spacer()
+            primaryActionButton
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private var stateIndicator: some View {
+        switch runner.state {
+        case .idle:
+            Label("Ready to record", systemImage: "mic")
+                .foregroundStyle(.secondary)
+        case .recording(let startTime):
+            TimelineView(.periodic(from: startTime, by: 1)) { context in
+                let elapsed = Int(context.date.timeIntervalSince(startTime))
+                Label(
+                    "Recording  \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))",
+                    systemImage: "record.circle.fill",
+                )
+                .foregroundStyle(.red)
+            }
+        case .transcribing:
+            if let pct = runner.transcriptionProgress {
+                Label("Transcribing  \(Int(pct * 100))%", systemImage: "waveform")
+            } else {
+                Label("Transcribing…", systemImage: "waveform")
+            }
+        case .summarizing:
+            Label("Summarizing…", systemImage: "sparkles")
+        case .done:
+            Label("Done", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .error(let msg):
+            Label(msg, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+                .help(msg)
+        }
+    }
+
+    @ViewBuilder
+    private var primaryActionButton: some View {
+        switch runner.state {
+        case .idle, .done, .error:
+            Button {
+                runner.startRecording(config: config)
+            } label: {
+                Label("Record", systemImage: "record.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.large)
+            .keyboardShortcut("r", modifiers: .command)
+            .help("Start recording (⌘R)")
+        case .recording:
+            Button {
+                runner.stopRecording()
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(".", modifiers: .command)
+            .help("Stop recording (⌘.)")
+        case .transcribing, .summarizing:
+            Button {
+                runner.cancelProcessing()
+            } label: {
+                Label("Cancel", systemImage: "xmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .keyboardShortcut(".", modifiers: .command)
+            .help("Cancel (⌘.)")
+        }
+    }
+
+    private func handleStateChange(_ newState: AppState) {
+        // Whenever the pipeline transitions — recording starts, recording
+        // ends, transcription finishes — refresh the sidebar list so newly
+        // produced sessions and artifacts show up immediately.
+        refresh()
+
+        // Auto-select the session the runner is actively working on so the
+        // user sees its detail without having to click the new row manually.
+        if let current = runner.currentSession, selectedSessionID != current.path {
+            selectedSessionID = current.path
+            loadDetail(sessionID: current.path)
         }
     }
 

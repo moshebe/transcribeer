@@ -178,6 +178,11 @@ build-dev-variant: build-dev
 	  $(DEV_VARIANT_BUNDLE)/Contents/Info.plist 2>/dev/null || \
 	 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $(DEV_VARIANT_NAME)" \
 	  $(DEV_VARIANT_BUNDLE)/Contents/Info.plist
+	@# Drop LSUIElement so the dev variant also shows a Dock icon + Cmd+Tab entry.
+	@# Main stays menubar-only (moshebe's design); dev gets a second surface so
+	@# reviewers can find and use the window UI without fighting the menubar.
+	@/usr/libexec/PlistBuddy -c "Delete :LSUIElement" \
+	  $(DEV_VARIANT_BUNDLE)/Contents/Info.plist 2>/dev/null || true
 	@codesign --force --deep --sign - $(DEV_VARIANT_BUNDLE) >/dev/null 2>&1
 	@echo "✓ dev variant: $(DEV_VARIANT_BUNDLE)"
 	@echo "  bundle id: $(DEV_VARIANT_BUNDLE_ID) — runs alongside a main install"
