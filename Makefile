@@ -12,20 +12,30 @@ APP_CONTENTS = $(APP_BUNDLE)/Contents
 APP_MACOS    = $(APP_CONTENTS)/MacOS
 APP_RESOURCES = $(APP_CONTENTS)/Resources
 
+# Side-by-side dev variant: distinct bundle id so it can run alongside a
+# normally-installed Transcribeer without conflicting over the menu bar slot
+# or the launch-agent socket. MenuBarIcon shows a small orange "D" badge at
+# runtime when it detects this suffix.
+DEV_VARIANT_BUNDLE   = $(PROJECT_DIR)/gui/.build/Transcribeer-dev.app
+DEV_VARIANT_BUNDLE_ID = com.transcribeer.menubar.dev
+DEV_VARIANT_NAME     = Transcribeer (dev)
+
 # Override with: make obsidian-plugin OBSIDIAN_VAULT=/path/to/your/vault
 OBSIDIAN_VAULT ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/$(shell id -un)
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build build-dev capture test-capture logs help dev dev-uninstall dev-restart obsidian-plugin lint lint-fix lint-strict clean e2e e2e-hebrew
+.PHONY: gui gui-build build-dev build-dev-variant gui-dev-variant capture test-capture logs help dev dev-uninstall dev-restart obsidian-plugin lint lint-fix lint-strict clean e2e e2e-hebrew
 
 help:
 	@echo "dev targets:"
 	@echo "  make dev            install locally + register as launch agent"
 	@echo "  make dev-uninstall  unload agent + remove plist"
 	@echo "  make dev-restart    restart the launch agent"
-	@echo "  make build-dev      build Swift GUI as .app bundle"
-	@echo "  make gui            build + launch .app bundle"
-	@echo "  make gui-build      build Swift binary only (no bundle)"
+	@echo "  make build-dev          build Swift GUI as .app bundle"
+	@echo "  make gui                build + launch .app bundle"
+	@echo "  make gui-build          build Swift binary only (no bundle)"
+	@echo "  make build-dev-variant  build a side-by-side 'dev' bundle that runs alongside a main install"
+	@echo "  make gui-dev-variant    build-dev-variant + launch"
 	@echo "  make capture        rebuild capture-bin → ~/.transcribeer/bin"
 	@echo "  make test-capture   test capture-bin directly (5s recording)"
 	@echo "  make logs           stream transcribeer process logs"
@@ -145,6 +155,35 @@ build-dev: gui-build
 
 gui: build-dev
 	open $(APP_BUNDLE)
+
+# ── side-by-side dev variant ──────────────────────────────────────────────────
+# Rebuilds the main bundle first (so binary + capture-bin + icon are fresh),
+# then copies it to Transcribeer-dev.app and rewrites the Info.plist to use a
+# distinct bundle id and display name. Ad-hoc re-signed because any Info.plist
+# change invalidates the bundle's existing signature.
+#
+# The resulting bundle can run at the same time as a normally-installed
+# Transcribeer: the two have different bundle ids, so macOS treats them as
+# separate applications in the menu bar, the Dock, and the app switcher.
+# MenuBarIcon detects the .dev suffix at runtime and overlays an orange "D"
+# badge so the two menu bar icons are visually distinguishable.
+build-dev-variant: build-dev
+	@rm -rf $(DEV_VARIANT_BUNDLE)
+	@cp -R $(APP_BUNDLE) $(DEV_VARIANT_BUNDLE)
+	@/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $(DEV_VARIANT_BUNDLE_ID)" \
+	  $(DEV_VARIANT_BUNDLE)/Contents/Info.plist
+	@/usr/libexec/PlistBuddy -c "Set :CFBundleName $(DEV_VARIANT_NAME)" \
+	  $(DEV_VARIANT_BUNDLE)/Contents/Info.plist
+	@/usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $(DEV_VARIANT_NAME)" \
+	  $(DEV_VARIANT_BUNDLE)/Contents/Info.plist 2>/dev/null || \
+	 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $(DEV_VARIANT_NAME)" \
+	  $(DEV_VARIANT_BUNDLE)/Contents/Info.plist
+	@codesign --force --deep --sign - $(DEV_VARIANT_BUNDLE) >/dev/null 2>&1
+	@echo "✓ dev variant: $(DEV_VARIANT_BUNDLE)"
+	@echo "  bundle id: $(DEV_VARIANT_BUNDLE_ID) — runs alongside a main install"
+
+gui-dev-variant: build-dev-variant
+	open -n $(DEV_VARIANT_BUNDLE)
 
 # ── capture-bin ───────────────────────────────────────────────────────────────
 capture:
