@@ -20,6 +20,8 @@
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Transcribeer records microphone audio to transcribe meetings and voice notes.</string>
     <key>NSUserNotificationsUsageDescription</key>
     <string>Alerts when transcription is complete.</string>
 </dict>

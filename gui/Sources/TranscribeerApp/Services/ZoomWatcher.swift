@@ -1,16 +1,30 @@
 import AppKit
+import os
 
-/// Watches for Zoom meeting processes via NSWorkspace polling.
+/// Watches for active Zoom meetings via NSWorkspace polling.
+///
+/// Detection uses two signals, in order:
+/// 1. `us.zoom.CptHost` process present — spawns at meeting start / tears down at leave.
+///    (`us.zoom.caphost` spawns eagerly at Zoom launch, so it is NOT a meeting signal.)
+/// 2. A `us.zoom.xos` window exists whose title is not the home screen.
+///    Home screen titles are `Zoom` and `Zoom Workplace`; the meeting window itself is
+///    titled `Zoom Meeting` when no topic is set (that counts as in-meeting).
 @Observable
 @MainActor
 final class ZoomWatcher {
-    /// True when us.zoom.caphost is running (active Zoom meeting).
+    /// True when a Zoom meeting is active.
     var inMeeting = false
 
-    private static let meetingBundle = "us.zoom.caphost"
+    /// Bundles whose mere presence indicates an active meeting.
+    private static let meetingProcessBundles: Set<String> = ["us.zoom.CptHost"]
+    /// Bundles we inspect via AX for window titles.
     private static let titleBundles: Set<String> = ["us.zoom.xos", "us.zoom.caphost"]
-    private static let genericTitles: Set<String> = ["zoom", "zoom meeting", "zoom workplace"]
+    /// Home screen / splash window titles — not a real meeting.
+    private static let homeTitles: Set<String> = ["zoom", "zoom workplace"]
+    /// Titles that indicate a meeting but carry no topic (skip for display).
+    private static let untitledMeetingTitles: Set<String> = ["zoom meeting"]
 
+    private let logger = Logger(subsystem: "com.transcribeer", category: "zoom-watcher")
     private var pollTimer: Timer?
 
     func startPolling() {
@@ -28,15 +42,26 @@ final class ZoomWatcher {
     }
 
     private func check() {
-        let nowInMeeting = hasActiveMeetingWindow()
+        let nowInMeeting = hasMeetingProcess() || hasMeetingWindow()
         if nowInMeeting != inMeeting {
+            logger.info("inMeeting \(self.inMeeting, privacy: .public) -> \(nowInMeeting, privacy: .public)")
             inMeeting = nowInMeeting
         }
     }
 
-    /// Check for a Zoom meeting window via Accessibility APIs.
-    /// A running process alone is not enough — we need an actual meeting window.
-    private func hasActiveMeetingWindow() -> Bool {
+    /// Fast check: any meeting-only Zoom helper process running?
+    private func hasMeetingProcess() -> Bool {
+        for app in NSWorkspace.shared.runningApplications {
+            if let bundleID = app.bundleIdentifier,
+               Self.meetingProcessBundles.contains(bundleID) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Fallback: AX-inspect Zoom windows and treat any non-home title as a meeting.
+    private func hasMeetingWindow() -> Bool {
         for app in NSWorkspace.shared.runningApplications {
             guard let bundleID = app.bundleIdentifier,
                   Self.titleBundles.contains(bundleID) else { continue }
@@ -52,19 +77,18 @@ final class ZoomWatcher {
                       let title = titleRef as? String,
                       !title.isEmpty else { continue }
 
-                let lower = title.lowercased()
-                // Skip generic/home screen titles — only match actual meeting windows
-                if Self.genericTitles.contains(lower) { continue }
-                return true
+                if !Self.homeTitles.contains(title.lowercased()) {
+                    return true
+                }
             }
         }
         return false
     }
 
-    /// Attempt to read the Zoom meeting title via Accessibility APIs.
+    /// Attempt to read the Zoom meeting topic via AX. Returns nil if no topic is set
+    /// (e.g. window titled just "Zoom Meeting").
     func meetingTitle() -> String? {
-        let workspace = NSWorkspace.shared
-        for app in workspace.runningApplications {
+        for app in NSWorkspace.shared.runningApplications {
             guard let bundleID = app.bundleIdentifier,
                   Self.titleBundles.contains(bundleID) else { continue }
 
@@ -85,7 +109,7 @@ final class ZoomWatcher {
         return nil
     }
 
-    private static func cleanZoomTitle(_ raw: String) -> String? {
+    static func cleanZoomTitle(_ raw: String) -> String? {
         var title = raw.trimmingCharacters(in: .whitespaces)
         if title.isEmpty { return nil }
 
@@ -93,7 +117,8 @@ final class ZoomWatcher {
             title = String(title.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
         }
 
-        if title.isEmpty || genericTitles.contains(title.lowercased()) {
+        let lower = title.lowercased()
+        if title.isEmpty || homeTitles.contains(lower) || untitledMeetingTitles.contains(lower) {
             return nil
         }
         return title

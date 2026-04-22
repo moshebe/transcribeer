@@ -56,10 +56,27 @@ struct SettingsView: View {
                     get: { config.zoomAutoRecord },
                     set: { config.zoomAutoRecord = $0; save() }
                 ))
+                Stepper(
+                    value: Binding(
+                        get: { config.zoomAutoRecordDelay },
+                        set: { config.zoomAutoRecordDelay = max(0, $0); save() }
+                    ),
+                    in: 0...60
+                ) {
+                    HStack {
+                        Text("Countdown before recording")
+                        Spacer()
+                        Text("\(config.zoomAutoRecordDelay)s")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                .disabled(!config.zoomAutoRecord)
             } header: {
                 Text("Zoom Integration")
             } footer: {
-                Text("Start/stop recording automatically when a Zoom meeting starts/ends.")
+                Text("Start/stop recording automatically when a Zoom meeting starts/ends. "
+                    + "A notification with a cancel button appears during the countdown.")
                     .foregroundStyle(.secondary)
             }
         }

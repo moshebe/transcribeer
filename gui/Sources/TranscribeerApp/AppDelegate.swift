@@ -7,6 +7,7 @@ private let logger = Logger(subsystem: "com.transcribeer", category: "delegate")
 /// Handles app lifecycle events and notification delegation.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var onRecord: (() -> Void)?
+    var onCancelAutoRecord: (() -> Void)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("applicationDidFinishLaunching")
@@ -37,9 +38,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let id = response.actionIdentifier
-        if id == NotificationManager.recordAction
+        if id == NotificationManager.cancelAutoRecordAction {
+            onCancelAutoRecord?()
+        } else if id == NotificationManager.recordAction
             || id == UNNotificationDefaultActionIdentifier {
-            onRecord?()
+            // Tapping body of countdown notification should not trigger a
+            // generic "record" action — recording is already queued.
+            if response.notification.request.identifier == NotificationManager.zoomCountdownIdentifier {
+                // no-op — countdown already in progress
+            } else {
+                onRecord?()
+            }
         }
         completionHandler()
     }

@@ -14,6 +14,7 @@ struct AppConfig: Equatable {
     var captureBin: String = Self.defaultCaptureBin()
     var pipelineMode: String = "record+transcribe+summarize"
     var zoomAutoRecord: Bool = false
+    var zoomAutoRecordDelay: Int = 5
     var promptOnStop: Bool = true
 
     var expandedSessionsDir: String {
@@ -49,6 +50,7 @@ private struct TOMLFile: Decodable {
 private struct PipelineSection: Decodable {
     var mode: String?
     var zoom_auto_record: Bool?
+    var zoom_auto_record_delay: Int?
 }
 
 private struct TranscriptionSection: Decodable {
@@ -109,6 +111,9 @@ enum ConfigManager {
         if let pipeline = toml.pipeline {
             cfg.pipelineMode = pipeline.mode ?? cfg.pipelineMode
             cfg.zoomAutoRecord = pipeline.zoom_auto_record ?? cfg.zoomAutoRecord
+            if let delay = pipeline.zoom_auto_record_delay, delay >= 0 {
+                cfg.zoomAutoRecordDelay = delay
+            }
         }
         if let transcription = toml.transcription {
             cfg.language = transcription.language ?? cfg.language
@@ -138,6 +143,7 @@ enum ConfigManager {
         [pipeline]
         mode = "\(cfg.pipelineMode)"
         zoom_auto_record = \(cfg.zoomAutoRecord)
+        zoom_auto_record_delay = \(cfg.zoomAutoRecordDelay)
 
         [transcription]
         language = "\(cfg.language)"

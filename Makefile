@@ -1,6 +1,17 @@
 GITHUB_USER  = moshebe
 BIN_DIR      = $(HOME)/.transcribeer/bin
-ENTITLEMENTS = capture/capture.entitlements.plist
+ENTITLEMENTS     = capture/capture.entitlements.plist
+APP_ENTITLEMENTS = gui/Transcribeer.entitlements.plist
+# Code signing identity. Defaults to a local self-signed cert "Transcribeer Dev"
+# so TCC permissions (mic, screen recording) persist across rebuilds.
+# Create once via Keychain Access → Certificate Assistant → Create a Certificate
+# (Name: "Transcribeer Dev", Identity Type: Self Signed Root, Type: Code Signing).
+# Override to "-" for ad-hoc, or to a Developer ID for release builds.
+CODESIGN_IDENTITY ?= Transcribeer Dev
+# Resolve to ad-hoc if the configured identity is missing from the keychain, so
+# `make dev` still works on fresh clones. All codesign calls use this resolved
+# value; the unresolved CODESIGN_IDENTITY is only used for the warning message.
+EFFECTIVE_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | grep -q '"$(CODESIGN_IDENTITY)"' && printf '%s' '$(CODESIGN_IDENTITY)' || printf '%s' '-')
 
 PLIST_LABEL  = com.transcribeer.dev
 PLIST_PATH   = $(HOME)/Library/LaunchAgents/$(PLIST_LABEL).plist
@@ -15,7 +26,7 @@ APP_RESOURCES = $(APP_CONTENTS)/Resources
 OBSIDIAN_VAULT = $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/kostyay
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build build-dev capture test-capture logs help dev dev-uninstall dev-restart obsidian-plugin lint lint-fix lint-strict e2e e2e-hebrew
+.PHONY: gui gui-build build-dev capture test-capture logs help dev dev-uninstall dev-restart obsidian-plugin lint lint-fix lint-strict e2e e2e-hebrew reset-mac-permissions sign check-identity setup-dev-cert
 
 help:
 	@echo "dev targets:"
@@ -27,6 +38,10 @@ help:
 	@echo "  make gui-build      build Swift binary only (no bundle)"
 	@echo "  make capture        rebuild capture-bin → ~/.transcribeer/bin"
 	@echo "  make test-capture   test capture-bin directly (5s recording)"
+	@echo "  make reset-mac-permissions  kill processes + reset mic/screen TCC entries"
+	@echo "  make sign           resign app bundle + capture-bin with CODESIGN_IDENTITY"
+	@echo "  make check-identity validate CODESIGN_IDENTITY exists in keychain"
+	@echo "  make setup-dev-cert create local self-signed code signing cert (idempotent)"
 	@echo "  make logs           stream transcribeer process logs"
 	@echo "  make obsidian-plugin  build + install Obsidian plugin into vault"
 	@echo "  make lint           run swiftlint (requires: brew install swiftlint)"
@@ -82,7 +97,88 @@ define PLIST_CONTENT
 endef
 export PLIST_CONTENT
 
-dev: capture build-dev
+# ── codesign helpers ────────────────────────────────────────────────────────────────────
+# setup-dev-cert: create the "Transcribeer Dev" self-signed code signing cert
+# in the login keychain and trust it for code signing. Idempotent.
+setup-dev-cert:
+	@set -e; \
+	if [ "$(CODESIGN_IDENTITY)" = "-" ]; then \
+	  echo "→ CODESIGN_IDENTITY=- (ad-hoc); skipping cert setup"; exit 0; \
+	fi; \
+	case "$(CODESIGN_IDENTITY)" in \
+	  Apple*|"Developer ID"*|"Mac Developer"*) \
+	    echo "→ CODESIGN_IDENTITY='$(CODESIGN_IDENTITY)' is an Apple-issued identity; skipping self-signed cert setup"; exit 0;; \
+	esac; \
+	if security find-identity -v -p codesigning | grep -q '"$(CODESIGN_IDENTITY)"'; then \
+	  echo "✓ $(CODESIGN_IDENTITY) already installed"; \
+	  exit 0; \
+	fi; \
+	echo "→ creating self-signed code signing cert '$(CODESIGN_IDENTITY)'"; \
+	WORK=$$(mktemp -d); \
+	trap "rm -rf $$WORK" EXIT; \
+	printf '%s\n' \
+	  '[ req ]' \
+	  'distinguished_name = req_dn' \
+	  'x509_extensions    = v3_ca' \
+	  'prompt             = no' \
+	  '' \
+	  '[ req_dn ]' \
+	  'CN = $(CODESIGN_IDENTITY)' \
+	  '' \
+	  '[ v3_ca ]' \
+	  'basicConstraints     = critical, CA:FALSE' \
+	  'keyUsage             = critical, digitalSignature' \
+	  'extendedKeyUsage     = critical, codeSigning' \
+	  'subjectKeyIdentifier = hash' > $$WORK/cert.cnf; \
+	openssl req -x509 -newkey rsa:2048 -nodes \
+	  -keyout $$WORK/key.pem -out $$WORK/cert.pem \
+	  -days 3650 -config $$WORK/cert.cnf 2>/dev/null; \
+	openssl pkcs12 -export -legacy \
+	  -out $$WORK/cert.p12 -inkey $$WORK/key.pem -in $$WORK/cert.pem \
+	  -name "$(CODESIGN_IDENTITY)" -passout pass:tmp; \
+	security import $$WORK/cert.p12 -k $$HOME/Library/Keychains/login.keychain-db \
+	  -P tmp -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productsign; \
+	security add-trusted-cert -p codeSign -k $$HOME/Library/Keychains/login.keychain-db $$WORK/cert.pem; \
+	echo "✓ cert installed:"; \
+	security find-identity -v -p codesigning | grep "$(CODESIGN_IDENTITY)" | sed 's/^/    /'
+
+
+# check-identity: verify $(CODESIGN_IDENTITY) is usable. Ad-hoc ("-") always
+# ok; named identity must exist in the login keychain.
+check-identity:
+	@if [ "$(EFFECTIVE_IDENTITY)" = "-" ] && [ "$(CODESIGN_IDENTITY)" != "-" ]; then \
+		echo "⚠  codesign identity '$(CODESIGN_IDENTITY)' not found in keychain — falling back to ad-hoc."; \
+		echo "   macOS will re-prompt for mic/screen permissions after every rebuild."; \
+		echo "   To fix: Keychain Access → Certificate Assistant → Create a Certificate"; \
+		echo "           Name: $(CODESIGN_IDENTITY)  Identity Type: Self Signed Root  Type: Code Signing"; \
+	elif [ "$(EFFECTIVE_IDENTITY)" = "-" ]; then \
+		echo "⚠  using ad-hoc signing — macOS will re-prompt for permissions after every rebuild."; \
+	else \
+		echo "✓ codesign identity: $(EFFECTIVE_IDENTITY)"; \
+	fi
+
+# sign: (re)sign existing app bundle + capture-bin with $(CODESIGN_IDENTITY)
+# without rebuilding. Useful after changing CODESIGN_IDENTITY or when a prior
+# build used ad-hoc.
+sign: check-identity
+	@if [ -f $(BIN_DIR)/capture-bin ]; then \
+		echo "→ signing capture-bin"; \
+		codesign --force --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(ENTITLEMENTS) --options runtime $(BIN_DIR)/capture-bin; \
+	else \
+		echo "→ skip capture-bin (not built)"; \
+	fi
+	@if [ -d $(APP_BUNDLE) ]; then \
+		echo "→ signing $(APP_BUNDLE)"; \
+		codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) --options runtime $(APP_BUNDLE) 2>/dev/null || \
+		  codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) $(APP_BUNDLE); \
+	else \
+		echo "→ skip app bundle (not built)"; \
+	fi
+	@echo "✓ signed. Current state:"
+	@[ -f $(BIN_DIR)/capture-bin ] && codesign -dv $(BIN_DIR)/capture-bin 2>&1 | grep -E 'Authority|Signature|Identifier' | sed 's/^/    capture-bin: /' || true
+	@[ -d $(APP_BUNDLE) ] && codesign -dv $(APP_BUNDLE) 2>&1 | grep -E 'Authority|Signature|Identifier' | sed 's/^/    app-bundle:  /' || true
+
+dev: setup-dev-cert capture build-dev
 	@mkdir -p $(LOG_DIR)
 	@launchctl bootout gui/$$(id -u)/$(PLIST_LABEL) 2>/dev/null || true
 	@# Wait for the previous instance to fully tear down; bootstrap errors with
@@ -132,8 +228,10 @@ build-dev: gui-build
 		iconutil --convert icns --output $(APP_RESOURCES)/AppIcon.icns "$$iconset_dir"; \
 		rm -rf "$$iconset_root"; \
 	fi
+	codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) --options runtime $(APP_BUNDLE) 2>/dev/null || \
+	  codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) $(APP_BUNDLE)
 	@touch $(APP_BUNDLE)
-	@echo "✓ app bundle: $(APP_BUNDLE)"
+	@echo "✓ app bundle: $(APP_BUNDLE) (signed: $(EFFECTIVE_IDENTITY))"
 
 gui: build-dev
 	open $(APP_BUNDLE)
@@ -144,8 +242,28 @@ capture:
 	cd capture && swift build -c release -q
 	cp capture/.build/release/capture $(BIN_DIR)/capture-bin
 	chmod +x $(BIN_DIR)/capture-bin
-	codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BIN_DIR)/capture-bin 2>/dev/null || true
-	codesign --force --sign - $(BIN_DIR)/capture-bin 2>/dev/null
+	codesign --force --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(ENTITLEMENTS) --options runtime $(BIN_DIR)/capture-bin
+
+# ── reset macOS TCC permissions ──────────────────────────────────────────────
+# Use when macOS is confused about mic/screen-recording grants after ad-hoc
+# signature changes. Kills running instances, clears TCC entries for the app
+# bundle ID and the standalone capture-bin, then you can relaunch to re-prompt.
+reset-mac-permissions:
+	@echo "→ killing running instances"
+	-pkill -f TranscribeerApp 2>/dev/null || true
+	-pkill -f capture-bin 2>/dev/null || true
+	@echo "→ resetting user-level TCC (Microphone, ScreenCapture, SystemPolicyAllFiles)"
+	-@for svc in Microphone ScreenCapture SystemPolicyAllFiles; do \
+		tccutil reset $$svc com.transcribeer.menubar 2>/dev/null || true; \
+	done
+	@echo "→ resetting system-level TCC (Accessibility, ListenEvent, PostEvent) — needs sudo"
+	-@for svc in Accessibility ListenEvent PostEvent; do \
+		sudo tccutil reset $$svc com.transcribeer.menubar 2>/dev/null || true; \
+	done
+	@echo "→ resetting TCC for standalone capture-bin (no bundle ID → resets all)"
+	-tccutil reset Microphone 2>/dev/null || true
+	-tccutil reset ScreenCapture 2>/dev/null || true
+	@echo "✓ done. Relaunch with: make gui"
 
 # ── test capture directly (terminal has TCC) ─────────────────────────────────
 test-capture:
