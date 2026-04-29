@@ -19,6 +19,7 @@ test/
 .agents/
 .pi/
 .tickets/
+.notes/
 skills-lock.json
 
 # App bundles (dev builds)

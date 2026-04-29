@@ -116,6 +116,18 @@ struct SessionDetailView: View {
         // so there's no need for a separate plain `.task`.
         .task(id: config.ollamaHost) { await refreshSummaryModels() }
         .onChange(of: session.id) { _, _ in syncFields() }
+        // Work around the state-sync race where this view is rendered with a
+        // new `session` but the parent's `detail` state hasn't caught up yet
+        // (parent updates `detail` in its own `.onChange`, which runs after
+        // this body). When the detail eventually catches up, re-sync the
+        // local editable fields — but only if the user hasn't started typing
+        // (local value still matches the previous `detail.*`).
+        .onChange(of: detail.name) { oldValue, newValue in
+            if name == oldValue { name = newValue }
+        }
+        .onChange(of: detail.notes) { oldValue, newValue in
+            if notes == oldValue { notes = newValue }
+        }
         .onChange(of: detail.language) { _, _ in syncLanguage() }
         .onChange(of: statusText) { _, newValue in scheduleStatusClear(for: newValue) }
         .onChange(of: showProgressRow) { _, isVisible in

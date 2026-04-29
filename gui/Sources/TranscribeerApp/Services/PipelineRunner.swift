@@ -106,10 +106,10 @@ final class PipelineRunner {
         let recordResult = await CaptureService.record(to: audioPath, duration: nil)
 
         switch recordResult {
-        case .permissionDenied:
-            let err = "Grant Screen Recording in System Settings → Privacy"
-            logger.log(err)
-            state = .error(err)
+        case .permissionDenied(let detail):
+            logger.log("capture failed: \(detail)")
+            state = .error(detail)
+            NotificationManager.notifyError(detail)
             return
         case .error(let err):
             logger.log("capture failed: \(err)")
@@ -271,6 +271,12 @@ final class PipelineRunner {
         diarization: String,
         numSpeakers: Int
     ) async throws -> String {
+        // Guard: fail fast on silent recordings before the WhisperKit model
+        // load kicks off. The GUI is the primary producer of ScreenCaptureKit
+        // captures, so this is where a muted / no-playback capture would
+        // otherwise burn several minutes on a guaranteed-empty transcript.
+        try AudioValidation.ensureAudibleSignal(at: audioPath)
+
         // Ensure the configured model is loaded. Runs on the service's
         // MainActor but quickly hands off to a background task for the
         // expensive compile/prewarm steps WhisperKit performs internally.

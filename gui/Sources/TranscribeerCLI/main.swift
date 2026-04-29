@@ -65,8 +65,20 @@ struct Transcribe: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip speaker diarization.")
     var noDiarize = false
 
+    @Option(
+        name: .long,
+        help: "Number of distinct speakers. Overrides config; 0 = auto-detect."
+    )
+    var numSpeakers: Int?
+
     @Option(name: .shortAndLong, help: "Output .txt path.")
     var out: String?
+
+    func validate() throws {
+        if let ns = numSpeakers, ns < 0 {
+            throw ValidationError("--num-speakers must be >= 0 (0 means auto-detect).")
+        }
+    }
 
     func run() async throws {
         let cfg = ConfigManager.load()
@@ -82,6 +94,7 @@ struct Transcribe: AsyncParsableCommand {
             audioURL: audioURL,
             language: language,
             diarization: noDiarize ? "none" : cfg.diarization,
+            numSpeakers: resolveNumSpeakers(override: numSpeakers, config: cfg.numSpeakers),
             cfg: cfg
         )
 
@@ -151,8 +164,20 @@ struct Run: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip speaker diarization.")
     var noDiarize = false
 
+    @Option(
+        name: .long,
+        help: "Number of distinct speakers. Overrides config; 0 = auto-detect."
+    )
+    var numSpeakers: Int?
+
     @Flag(name: .long, help: "Skip summarization.")
     var noSummarize = false
+
+    func validate() throws {
+        if let ns = numSpeakers, ns < 0 {
+            throw ValidationError("--num-speakers must be >= 0 (0 means auto-detect).")
+        }
+    }
 
     @Option(name: .long, help: "Named prompt profile from ~/.transcribeer/prompts/.")
     var profile: String?
@@ -177,9 +202,8 @@ struct Run: AsyncParsableCommand {
         let text = try await transcribeAndFormat(
             audioURL: audioPath,
             language: language,
-            model: cfg.whisperModel,
             diarization: noDiarize ? "none" : cfg.diarization,
-            numSpeakers: cfg.numSpeakers,
+            numSpeakers: resolveNumSpeakers(override: numSpeakers, config: cfg.numSpeakers),
             cfg: cfg
         )
         try text.write(to: txPath, atomically: true, encoding: .utf8)
@@ -251,12 +275,26 @@ private func runCapture(captureBin: String, audioPath: String, duration: Int?, p
     }
 }
 
+/// Resolve the effective speaker count by preferring the CLI override over the
+/// config value. `0` in either layer means "auto-detect" and maps to `nil`.
+private func resolveNumSpeakers(override: Int?, config: Int) -> Int? {
+    if let override {
+        return override > 0 ? override : nil
+    }
+    return config > 0 ? config : nil
+}
+
 private func transcribeAndFormat(
     audioURL: URL,
     language: String,
     diarization: String,
+    numSpeakers: Int?,
     cfg: AppConfig
 ) async throws -> String {
+    // Guard: fail fast on silent recordings (e.g. SCStream captured nothing).
+    // Saves 5-10 min of wasted WhisperKit CPU on a guaranteed empty transcript.
+    try AudioValidation.ensureAudibleSignal(at: audioURL)
+
     print("  Loading model \(cfg.whisperModel)…")
     let whisperSegments = try await transcribeAudio(
         audioURL: audioURL,
@@ -280,7 +318,7 @@ private func transcribeAndFormat(
         print("  Diarizing speakers…")
         diarSegments = (try? await DiarizationService.diarize(
             audioURL: audioURL,
-            numSpeakers: cfg.numSpeakers > 0 ? cfg.numSpeakers : nil
+            numSpeakers: numSpeakers
         )) ?? []
     }
 

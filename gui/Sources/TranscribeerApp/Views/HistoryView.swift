@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import TranscribeerCore
+import UniformTypeIdentifiers
 
 struct HistoryView: View {
     @Binding var config: AppConfig
@@ -12,11 +14,22 @@ struct HistoryView: View {
     @State private var profiles: [String] = ["default"]
     @State private var statusText = ""
 
+    /// SwiftUI's canonical way to open the app's Settings scene (macOS 14+).
+    /// The older NSApp.sendAction("showSettingsWindow:") path is flaky in
+    /// menu-bar-extra-only apps because there's no first responder to route
+    /// the selector through; this environment action talks to the Settings
+    /// scene directly.
+    @Environment(\.openSettings) private var openSettingsEnv
+
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detailPanel
+        VStack(spacing: 0) {
+            controlBar
+            Divider()
+            NavigationSplitView {
+                sidebar
+            } detail: {
+                detailPanel
+            }
         }
         .frame(minWidth: 800, minHeight: 500)
         .onAppear {
@@ -26,6 +39,258 @@ struct HistoryView: View {
         }
         .onDisappear {
             DockVisibility.windowDidDisappear()
+        }
+        .onChange(of: runner.state) { _, newState in
+            handleStateChange(newState)
+        }
+    }
+
+    // MARK: - Control bar
+    //
+    // Surfaces the record/stop/cancel controls inside the window, so users
+    // without the menubar icon visible (e.g. when other menu-bar extras push
+    // ours behind the notch on MacBook Pros) still have a first-class way to
+    // drive the pipeline. The menubar dropdown keeps working exactly as
+    // before; this is an additive surface for the same `PipelineRunner`
+    // state machine.
+
+    private var controlBar: some View {
+        HStack(spacing: 12) {
+            stateIndicator
+            Spacer()
+            importButton
+            settingsButton
+            primaryActionButton
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
+    }
+
+    /// Tray-icon next to the primary action — lets users import an existing
+    /// audio file (Voice Memos export, Zoom recording, WhatsApp .m4a, anything
+    /// AVFoundation can decode) as a new session so they can transcribe it
+    /// without re-recording.
+    private var importButton: some View {
+        Button {
+            importAudioFile()
+        } label: {
+            Image(systemName: "square.and.arrow.down")
+                .font(.system(size: 16))
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.large)
+        .help("Import audio file…")
+        .keyboardShortcut("i", modifiers: .command)
+    }
+
+    /// Gear icon next to the primary action — opens the Settings scene. Gives
+    /// users a discoverable in-window entry point instead of relying on the
+    /// macOS App menu or ⌘, (which aren't obvious if the menu bar extras are
+    /// hidden behind the notch).
+    private var settingsButton: some View {
+        Button {
+            NSApp.activate(ignoringOtherApps: true)
+            openSettingsEnv()
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 16))
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.large)
+        .help("Settings (⌘,)")
+        .keyboardShortcut(",", modifiers: .command)
+    }
+
+    // MARK: - Import
+
+    /// File-picker flow: pick one or more audio files, copy each into a new
+    /// session directory under `sessions_dir`, name the session from the
+    /// original filename, and select the first imported session in the
+    /// sidebar.
+    private func importAudioFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Import audio file(s)"
+        panel.message = "Select one or more audio recordings to import as sessions."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.audio, .movie]
+
+        // Default to wherever audio recordings most commonly live on this
+        // Mac: the Voice Memos folder if we can actually read it, else the
+        // Desktop (where exports and manual recordings land). Only a default;
+        // user can navigate anywhere in the picker.
+        panel.directoryURL = defaultImportDirectory()
+
+        // Block until user picks. .OK = chose at least one file.
+        guard panel.runModal() == .OK else { return }
+
+        let urls = panel.urls
+        guard !urls.isEmpty else { return }
+
+        var firstImportedID: String?
+        var imported = 0
+        var failed: [String] = []
+
+        for url in urls {
+            do {
+                let sessionURL = try importSessionFromFile(url: url)
+                if firstImportedID == nil {
+                    firstImportedID = sessionURL.path
+                }
+                imported += 1
+            } catch {
+                failed.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        refresh()
+        if let firstImportedID {
+            selectedSessionID = firstImportedID
+            loadDetail(sessionID: firstImportedID)
+        }
+
+        if failed.isEmpty {
+            statusText = imported == 1
+                ? "Imported \"\(urls[0].lastPathComponent)\"."
+                : "Imported \(imported) files."
+        } else {
+            statusText = "Imported \(imported); \(failed.count) failed: \(failed.joined(separator: "; "))"
+        }
+    }
+
+    /// Create a new session directory for `url` and copy the file in as
+    /// `audio.<ext>` (normalising m4a/wav names so the rest of the pipeline
+    /// finds it via `SessionManager.audioURL(in:)`). Preserves the original
+    /// filename (minus extension) as the session's display name via meta.json.
+    private func importSessionFromFile(url: URL) throws -> URL {
+        let sessionDir = SessionManager.newSession(sessionsDir: config.expandedSessionsDir)
+        let ext = url.pathExtension.lowercased()
+        // SessionManager.audioURL looks for audio.m4a then audio.wav. For any
+        // other audio type, fall back to .m4a so AVFoundation still picks it
+        // up (it doesn't need the extension to match the container).
+        let targetName = (ext == "m4a" || ext == "wav") ? "audio.\(ext)" : "audio.m4a"
+        let targetURL = sessionDir.appendingPathComponent(targetName)
+        try FileManager.default.copyItem(at: url, to: targetURL)
+
+        // Persist the original filename as the display name.
+        let baseName = url.deletingPathExtension().lastPathComponent
+        if !baseName.isEmpty {
+            SessionManager.setName(sessionDir, baseName)
+        }
+        return sessionDir
+    }
+
+    /// Pick a sensible default starting folder for the import panel. Prefers
+    /// a Voice Memos container we can actually read; falls back to Desktop,
+    /// then Downloads, then the user's home directory. Readability is checked
+    /// via `contentsOfDirectory`, not just existence — the Voice Memos folder
+    /// exists on every Mac but is TCC-gated on modern macOS and `fileExists`
+    /// wrongly reports it as usable.
+    private func defaultImportDirectory() -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates: [URL] = [
+            home.appendingPathComponent(
+                "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings",
+            ),
+            home.appendingPathComponent(
+                "Library/Containers/com.apple.VoiceMemos/Data/Library/Recordings",
+            ),
+            home.appendingPathComponent(
+                "Library/Application Support/com.apple.voicememos/Recordings",
+            ),
+            home.appendingPathComponent("Desktop"),
+            home.appendingPathComponent("Downloads"),
+            home,
+        ]
+        let fm = FileManager.default
+        return candidates.first { (try? fm.contentsOfDirectory(atPath: $0.path)) != nil }
+    }
+
+    @ViewBuilder
+    private var stateIndicator: some View {
+        switch runner.state {
+        case .idle:
+            Label("Ready to record", systemImage: "mic")
+                .foregroundStyle(.secondary)
+        case .recording(let startTime):
+            TimelineView(.periodic(from: startTime, by: 1)) { context in
+                let elapsed = Int(context.date.timeIntervalSince(startTime))
+                Label(
+                    "Recording  \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))",
+                    systemImage: "record.circle.fill",
+                )
+                .foregroundStyle(.red)
+            }
+        case .transcribing:
+            if let pct = runner.transcriptionProgress {
+                Label("Transcribing  \(Int(pct * 100))%", systemImage: "waveform")
+            } else {
+                Label("Transcribing…", systemImage: "waveform")
+            }
+        case .summarizing:
+            Label("Summarizing…", systemImage: "sparkles")
+        case .done:
+            Label("Done", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .error(let msg):
+            Label(msg, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+                .help(msg)
+        }
+    }
+
+    @ViewBuilder
+    private var primaryActionButton: some View {
+        switch runner.state {
+        case .idle, .done, .error:
+            Button {
+                runner.startRecording(config: config)
+            } label: {
+                Label("Record", systemImage: "record.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.large)
+            .keyboardShortcut("r", modifiers: .command)
+            .help("Start recording (⌘R)")
+        case .recording:
+            Button {
+                runner.stopRecording()
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(".", modifiers: .command)
+            .help("Stop recording (⌘.)")
+        case .transcribing, .summarizing:
+            Button {
+                runner.cancelProcessing()
+            } label: {
+                Label("Cancel", systemImage: "xmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .keyboardShortcut(".", modifiers: .command)
+            .help("Cancel (⌘.)")
+        }
+    }
+
+    private func handleStateChange(_ newState: AppState) {
+        // Whenever the pipeline transitions — recording starts, recording
+        // ends, transcription finishes — refresh the sidebar list so newly
+        // produced sessions and artifacts show up immediately.
+        refresh()
+
+        // Auto-select the session the runner is actively working on so the
+        // user sees its detail without having to click the new row manually.
+        if let current = runner.currentSession, selectedSessionID != current.path {
+            selectedSessionID = current.path
+            loadDetail(sessionID: current.path)
         }
     }
 
