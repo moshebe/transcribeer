@@ -272,8 +272,11 @@ public enum DualSourceTranscriber {
     }
 
     /// Pure logic: offset, tag, and interleave mic + sys segments.
-    /// Exposed `internal` for unit testing.
-    internal static func mergeAndTag(
+    ///
+    /// Public so the cloud transcription path in `TranscribeerApp` can
+    /// reuse the same offset/labelling rules without re-implementing the
+    /// timeline math, and so unit tests can call it without WhisperKit.
+    public static func mergeAndTag(
         micSegments: [TranscriptSegment]?,
         sysSegments: [TranscriptSegment]?,
         timing: TimingInfo,

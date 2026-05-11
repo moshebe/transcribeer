@@ -21,6 +21,10 @@ APP_BUNDLE   = $(PROJECT_DIR)/gui/.build/Transcribeer.app
 APP_CONTENTS = $(APP_BUNDLE)/Contents
 APP_MACOS    = $(APP_CONTENTS)/MacOS
 APP_RESOURCES = $(APP_CONTENTS)/Resources
+# Stamp file touched after a successful bundle assemble+sign. Used to skip the
+# whole cp/codesign/agent-restart dance when nothing actually changed.
+# Lives outside the bundle so codesign --deep doesn't trip on a foreign file.
+APP_STAMP    = $(PROJECT_DIR)/gui/.build/.build-dev.stamp
 
 # Side-by-side dev variant: distinct bundle id so it can run alongside a
 # normally-installed Transcribeer without conflicting over the menu bar slot
@@ -34,13 +38,15 @@ DEV_VARIANT_NAME     = Transcribeer (dev)
 OBSIDIAN_VAULT ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/$(shell id -un)
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build build-dev build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture
+.PHONY: gui gui-build build-dev build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture
 
 help:
 	@echo "dev targets:"
 	@echo "  make dev            install locally + register as launch agent"
 	@echo "  make dev-uninstall  unload agent + remove plist"
 	@echo "  make dev-restart    restart the launch agent"
+	@echo "  make start          ensure the dev agent is loaded and running (no rebuild)"
+	@echo "  make stop           stop the running dev agent process (keeps plist)"
 	@echo "  make build-dev          build Swift GUI as .app bundle"
 	@echo "  make gui                build + launch .app bundle"
 	@echo "  make gui-build          build Swift binary only (no bundle)"
@@ -78,6 +84,7 @@ verify-capture:
 # ── clean ─────────────────────────────────────────────────────────────────────
 clean:
 	rm -rf gui/.build
+	rm -f $(APP_STAMP)
 	@echo "✓ build caches cleared"
 
 # ── dev install + launch agent ────────────────────────────────────────────────
@@ -95,8 +102,6 @@ define PLIST_CONTENT
   <key>WorkingDirectory</key>
   <string>$(PROJECT_DIR)</string>
   <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
   <string>$(LOG_DIR)/transcribeer.log</string>
@@ -189,17 +194,42 @@ sign: check-identity
 	@echo "✓ signed. Current state:"
 	@[ -d $(APP_BUNDLE) ] && codesign -dv $(APP_BUNDLE) 2>&1 | grep -E 'Authority|Signature|Identifier' | sed 's/^/    app-bundle:  /' || true
 
-dev: setup-dev-cert build-dev
+# `make dev` stops the running agent BEFORE re-codesigning the bundle so
+# launchd can't try to relaunch into a half-signed binary ("Launch Constraint
+# Violation" / CODESIGNING). The binary inside the bundle is then swapped via
+# atomic rename in `build-dev` so even a still-running instance survives the
+# replace cleanly until launchctl kickstart restarts it below.
+#
+# To avoid restarting (and thus dropping the menubar) on no-op runs, we record
+# $(APP_STAMP)'s mtime before invoking build-dev. If the stamp didn't move,
+# nothing was rebuilt and we leave the running agent alone.
+dev: setup-dev-cert
 	@mkdir -p $(LOG_DIR)
-	@if launchctl list $(PLIST_LABEL) >/dev/null 2>&1; then \
-		launchctl kickstart -k gui/$$(id -u)/$(PLIST_LABEL); \
+	@: "Reference file captures the stamp's mtime before build-dev runs."; \
+	: "Using touch -r + test -nt is portable across BSD and GNU coreutils,"; \
+	: "unlike stat -f %m (BSD) vs stat -c %Y (GNU) which diverge on this box."; \
+	ref=$$(mktemp -t transcribeer-stamp-ref.XXXXXX); \
+	trap 'rm -f $$ref' EXIT; \
+	if [ -f $(APP_STAMP) ]; then touch -r $(APP_STAMP) $$ref; else : > $$ref; fi; \
+	agent_running=0; \
+	if launchctl list $(PLIST_LABEL) >/dev/null 2>&1; then agent_running=1; fi; \
+	$(MAKE) --no-print-directory build-dev || exit $$?; \
+	if [ -f $(APP_STAMP) ] && [ ! $(APP_STAMP) -nt $$ref ] && [ $$agent_running -eq 1 ]; then \
+		echo "✓ no rebuild needed — leaving running agent alone"; \
+		echo "  logs: $(LOG_DIR)/transcribeer.log"; \
+		exit 0; \
+	fi; \
+	if [ $$agent_running -eq 1 ]; then \
+		launchctl kill SIGTERM gui/$$(id -u)/$(PLIST_LABEL) 2>/dev/null || true; \
+		while launchctl list $(PLIST_LABEL) 2>/dev/null | grep -q '"PID" ='; do sleep 0.1; done; \
+		launchctl kickstart gui/$$(id -u)/$(PLIST_LABEL); \
 		echo "✓ transcribeer restarted (TCC preserved)"; \
 	else \
 		echo "$$PLIST_CONTENT" > $(PLIST_PATH); \
 		launchctl bootstrap gui/$$(id -u) $(PLIST_PATH); \
 		echo "✓ transcribeer dev agent installed and running"; \
-	fi
-	@echo "  logs: $(LOG_DIR)/transcribeer.log"
+	fi; \
+	echo "  logs: $(LOG_DIR)/transcribeer.log"
 
 dev-uninstall:
 	@launchctl bootout gui/$$(id -u)/$(PLIST_LABEL) 2>/dev/null || true
@@ -210,19 +240,72 @@ dev-restart:
 	@launchctl kickstart -k gui/$$(id -u)/$(PLIST_LABEL)
 	@echo "✓ transcribeer dev agent restarted"
 
+# start: ensure the dev agent is loaded AND its process is actually running.
+# Useful when the agent is loaded but the process was killed manually — the
+# plist has no KeepAlive, so launchd won't relaunch it on its own. `make dev`
+# short-circuits in that state because it only checks whether the agent is
+# loaded, not whether the process is alive.
+start:
+	@mkdir -p $(LOG_DIR)
+	@if [ ! -d $(APP_BUNDLE) ]; then \
+		echo "✗ app bundle missing: $(APP_BUNDLE) — run 'make dev' first"; exit 1; \
+	fi
+	@if ! launchctl list $(PLIST_LABEL) >/dev/null 2>&1; then \
+		echo "$$PLIST_CONTENT" > $(PLIST_PATH); \
+		launchctl bootstrap gui/$$(id -u) $(PLIST_PATH); \
+		echo "✓ transcribeer dev agent installed and running"; \
+	elif launchctl list $(PLIST_LABEL) 2>/dev/null | grep -q '"PID" ='; then \
+		echo "✓ transcribeer already running"; \
+	else \
+		launchctl kickstart gui/$$(id -u)/$(PLIST_LABEL); \
+		echo "✓ transcribeer started"; \
+	fi
+	@echo "  logs: $(LOG_DIR)/transcribeer.log"
+
+stop:
+	@if launchctl list $(PLIST_LABEL) 2>/dev/null | grep -q '"PID" ='; then \
+		launchctl kill SIGTERM gui/$$(id -u)/$(PLIST_LABEL) 2>/dev/null || true; \
+		while launchctl list $(PLIST_LABEL) 2>/dev/null | grep -q '"PID" ='; do sleep 0.1; done; \
+		echo "✓ transcribeer stopped (agent still loaded; 'make start' to relaunch)"; \
+	else \
+		echo "✓ transcribeer not running"; \
+	fi
+
 # ── Swift native GUI ──────────────────────────────────────────────────────────
 gui-build:
 	cd gui && swift build -c release -q
 	@echo "✓ gui binary: gui/.build/release/TranscribeerApp"
 
+# build-dev is incremental: a no-op `swift build` paired with an up-to-date
+# stamp file (mtime ≥ source files + entitlements + logo) skips the whole
+# cp + icon + codesign dance. The previous cmp-against-bundle-binary check
+# was a no-op because codesign rewrites the bundle binary in place, so the
+# unsigned release binary and the signed bundle binary never matched.
 build-dev: gui-build
-	@mkdir -p $(APP_MACOS) $(APP_RESOURCES)
-	@rm -f $(APP_MACOS)/capture-bin
-	@cmp -s gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp || \
-		cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp
-	@cmp -s gui/Info.plist $(APP_CONTENTS)/Info.plist || \
-		cp gui/Info.plist $(APP_CONTENTS)/Info.plist
-	@if [ -f assets/logo.png ]; then \
+	@if [ -f $(APP_STAMP) ] && [ -d $(APP_BUNDLE) ] \
+		&& [ ! gui/.build/release/TranscribeerApp -nt $(APP_STAMP) ] \
+		&& [ ! gui/Info.plist -nt $(APP_STAMP) ] \
+		&& [ ! $(APP_ENTITLEMENTS) -nt $(APP_STAMP) ] \
+		&& { [ ! -f assets/logo.png ] || [ ! assets/logo.png -nt $(APP_STAMP) ]; }; then \
+		echo "✓ app bundle up to date: $(APP_BUNDLE)"; \
+		exit 0; \
+	fi; \
+	set -e; \
+	mkdir -p $(APP_MACOS) $(APP_RESOURCES); \
+	rm -f $(APP_MACOS)/capture-bin; \
+	: "Atomic replace: copy to a sibling then rename(2). The running app's"; \
+	: "mmap keeps the old inode alive (unaffected) while the new file gets"; \
+	: "a fresh inode. In-place cp would mutate the live inode's pages and"; \
+	: "the kernel would kill the running process with CODESIGNING / Invalid"; \
+	: "Page on the next cold code-page fault."; \
+	if ! cmp -s gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.unsigned 2>/dev/null; then \
+		cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.new; \
+		mv -f $(APP_MACOS)/TranscribeerApp.new $(APP_MACOS)/TranscribeerApp; \
+		cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.unsigned; \
+	fi; \
+	cmp -s gui/Info.plist $(APP_CONTENTS)/Info.plist || \
+		cp gui/Info.plist $(APP_CONTENTS)/Info.plist; \
+	if [ -f assets/logo.png ] && [ assets/logo.png -nt $(APP_RESOURCES)/AppIcon.icns ]; then \
 		iconset_root="$$(mktemp -d /tmp/transcribeer-iconset.XXXXXX)"; \
 		iconset_dir="$$iconset_root/AppIcon.iconset"; \
 		mkdir -p "$$iconset_dir"; \
@@ -239,11 +322,11 @@ build-dev: gui-build
 		rm -f $(APP_RESOURCES)/AppIcon.icns; \
 		iconutil --convert icns --output $(APP_RESOURCES)/AppIcon.icns "$$iconset_dir"; \
 		rm -rf "$$iconset_root"; \
-	fi
+	fi; \
 	codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) --options runtime $(APP_BUNDLE) 2>/dev/null || \
-	  codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) $(APP_BUNDLE)
-	@touch $(APP_BUNDLE)
-	@echo "✓ app bundle: $(APP_BUNDLE) (signed: $(EFFECTIVE_IDENTITY))"
+	  codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) $(APP_BUNDLE); \
+	touch $(APP_STAMP); \
+	echo "✓ app bundle: $(APP_BUNDLE) (signed: $(EFFECTIVE_IDENTITY))"
 
 gui: build-dev
 	open $(APP_BUNDLE)

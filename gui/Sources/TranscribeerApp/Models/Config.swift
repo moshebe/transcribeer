@@ -4,8 +4,18 @@ import TOMLDecoder
 /// Mirrors ~/.transcribeer/config.toml.
 struct AppConfig: Equatable {
     var language: String = "auto"
+    /// Selected transcription backend (`whisperkit`, `openai`, `gemini`).
+    /// Mirrors `TranscriptionBackend`; stored as the raw string so config.toml
+    /// stays human-readable.
+    var transcriptionBackend: String = "whisperkit"
     var whisperModel: String = "openai_whisper-large-v3_turbo"
     var whisperModelRepo: String = ""
+    /// Cloud model used when `transcriptionBackend == "openai"`. `whisper-1`
+    /// is the only OpenAI audio model that returns segment-level timestamps.
+    var openaiTranscriptionModel: String = "whisper-1"
+    /// Cloud model used when `transcriptionBackend == "gemini"`. Must accept
+    /// audio inputs and support structured JSON output (Gemini 2.5+).
+    var geminiTranscriptionModel: String = "gemini-2.5-flash"
     var diarization: String = "pyannote"
     var numSpeakers: Int = 0
     var llmBackend: String = "ollama"
@@ -15,6 +25,11 @@ struct AppConfig: Equatable {
     var pipelineMode: String = "record+transcribe+summarize"
     var meetingAutoRecord: Bool = false
     var meetingAutoRecordDelay: Int = 5
+    /// Bundle IDs of apps that trigger auto-record when a meeting is detected.
+    /// Apps outside this set still fire a notification but do not auto-start.
+    /// Default: Zoom only — prevents Slack huddles, browser-based meetings, etc.
+    /// from auto-recording unless the user opts in.
+    var meetingAutoRecordApps: Set<String> = ["us.zoom.xos"]
     /// Read meeting topic and participant list from the Zoom app via
     /// Accessibility while a recording is in progress. Covers both enrichments
     /// as a single on/off switch — disabling skips the AX walks entirely.
@@ -26,6 +41,11 @@ struct AppConfig: Equatable {
     /// Values `<= 0` disable participant capture.
     var maxMeetingParticipants: Int = 10
     var promptOnStop: Bool = true
+    /// When true, a daily background job processes the previous day's
+    /// recordings (transcribe + summarize) at `scheduledTranscriptionHour`.
+    var scheduledTranscriptionEnabled: Bool = false
+    /// Hour-of-day (0–23, local time) the scheduled job fires. Default 3 AM.
+    var scheduledTranscriptionHour: Int = 3
     var audio = AudioSettings()
 
     var expandedSessionsDir: String {
@@ -35,7 +55,7 @@ struct AppConfig: Equatable {
     struct AudioSettings: Equatable {
         var inputDeviceUID: String = ""
         var outputDeviceUID: String = ""
-        var aec: Bool = true
+        var aec: Bool = false
         var selfLabel: String = "You"
         var otherLabel: String = "Them"
         var diarizeMicMultiuser: Bool = false
@@ -60,14 +80,20 @@ struct PipelineSection: Decodable {
     var mode: String?
     var meeting_auto_record: Bool?
     var meeting_auto_record_delay: Int?
+    var meeting_auto_record_apps: [String]?
     var zoom_enricher_enabled: Bool?
     var max_meeting_participants: Int?
+    var scheduled_transcription_enabled: Bool?
+    var scheduled_transcription_hour: Int?
 }
 
 struct TranscriptionSection: Decodable {
     var language: String?
+    var backend: String?
     var model: String?
     var model_repo: String?
+    var openai_model: String?
+    var gemini_model: String?
     var diarization: String?
     var num_speakers: Int?
 }
@@ -142,16 +168,27 @@ enum ConfigManager {
         if let delay = s.meeting_auto_record_delay, delay >= 0 {
             cfg.meetingAutoRecordDelay = delay
         }
+        if let apps = s.meeting_auto_record_apps {
+            cfg.meetingAutoRecordApps = Set(apps)
+        }
         if let maxParticipants = s.max_meeting_participants {
             cfg.maxMeetingParticipants = maxParticipants
         }
         cfg.zoomEnricherEnabled = s.zoom_enricher_enabled ?? cfg.zoomEnricherEnabled
+        cfg.scheduledTranscriptionEnabled =
+            s.scheduled_transcription_enabled ?? cfg.scheduledTranscriptionEnabled
+        if let hour = s.scheduled_transcription_hour, (0...23).contains(hour) {
+            cfg.scheduledTranscriptionHour = hour
+        }
     }
 
     private static func applyTranscription(_ s: TranscriptionSection, to cfg: inout AppConfig) {
         cfg.language = s.language ?? cfg.language
+        cfg.transcriptionBackend = s.backend ?? cfg.transcriptionBackend
         cfg.whisperModel = s.model.map(AppConfig.canonicalWhisperModel) ?? cfg.whisperModel
         cfg.whisperModelRepo = s.model_repo ?? cfg.whisperModelRepo
+        cfg.openaiTranscriptionModel = s.openai_model ?? cfg.openaiTranscriptionModel
+        cfg.geminiTranscriptionModel = s.gemini_model ?? cfg.geminiTranscriptionModel
         cfg.diarization = s.diarization ?? cfg.diarization
         cfg.numSpeakers = s.num_speakers ?? cfg.numSpeakers
     }
@@ -181,18 +218,28 @@ enum ConfigManager {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let speakers = cfg.numSpeakers
+        let autoRecordApps = cfg.meetingAutoRecordApps
+            .sorted()
+            .map(tomlString)
+            .joined(separator: ", ")
         let lines = """
         [pipeline]
         mode = \(tomlString(cfg.pipelineMode))
         meeting_auto_record = \(cfg.meetingAutoRecord)
         meeting_auto_record_delay = \(cfg.meetingAutoRecordDelay)
+        meeting_auto_record_apps = [\(autoRecordApps)]
         max_meeting_participants = \(cfg.maxMeetingParticipants)
         zoom_enricher_enabled = \(cfg.zoomEnricherEnabled)
+        scheduled_transcription_enabled = \(cfg.scheduledTranscriptionEnabled)
+        scheduled_transcription_hour = \(cfg.scheduledTranscriptionHour)
 
         [transcription]
         language = \(tomlString(cfg.language))
+        backend = \(tomlString(cfg.transcriptionBackend))
         model = \(tomlString(cfg.whisperModel))
         model_repo = \(tomlString(cfg.whisperModelRepo))
+        openai_model = \(tomlString(cfg.openaiTranscriptionModel))
+        gemini_model = \(tomlString(cfg.geminiTranscriptionModel))
         diarization = \(tomlString(cfg.diarization))
         num_speakers = \(speakers)
 
@@ -235,7 +282,7 @@ enum ConfigManager {
             default:
                 // TOML basic strings forbid control chars (0x00–0x1F, 0x7F)
                 // other than tab; encode via \uXXXX.
-                let scalar = ch.unicodeScalars.first.map { $0.value } ?? 0
+                let scalar = ch.unicodeScalars.first.map(\.value) ?? 0
                 if scalar < 0x20 || scalar == 0x7F {
                     escaped += String(format: "\\u%04X", scalar)
                 } else {

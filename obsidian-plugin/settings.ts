@@ -30,6 +30,29 @@ export class TranscribeerSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "Transcribeer" });
 
     new Setting(containerEl)
+      .setName("Import now")
+      .setDesc("Scan the sessions directory and import any new sessions.")
+      .addButton((btn) =>
+        btn
+          .setButtonText("Import all")
+          .setCta()
+          .onClick(() => this.plugin.runImport()),
+      );
+
+    new Setting(containerEl)
+      .setName("Reimport all (overwrite)")
+      .setDesc(
+        "Delete every plugin-imported note in the target folder and recreate them " +
+          "with the latest format. Notes without the plugin's source frontmatter are left alone.",
+      )
+      .addButton((btn) =>
+        btn
+          .setButtonText("Reimport all")
+          .setWarning()
+          .onClick(() => this.plugin.runReimport()),
+      );
+
+    new Setting(containerEl)
       .setName("Enable auto-import")
       .setDesc("Watch for new transcribeer sessions and import them automatically.")
       .addToggle((toggle) =>
@@ -38,6 +61,7 @@ export class TranscribeerSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           if (value) {
             this.plugin.startWatcher();
+            void this.plugin.importAllSessions();
           } else {
             this.plugin.stopWatcher();
           }

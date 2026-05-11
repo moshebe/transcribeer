@@ -202,31 +202,32 @@ struct TranscriptFormatterTests {
 
     @Test("RTL detection flags Hebrew text")
     func rtlDetectsHebrew() {
-        #expect(TextDirection.isRightToLeft("שלום עולם"))
+        #expect(TextDirection.containsRightToLeft("שלום עולם"))
     }
 
     @Test("RTL detection flags Arabic text")
     func rtlDetectsArabic() {
-        #expect(TextDirection.isRightToLeft("مرحبا بالعالم"))
+        #expect(TextDirection.containsRightToLeft("مرحبا بالعالم"))
     }
 
     @Test("RTL detection is false for English")
     func rtlFalseForEnglish() {
-        #expect(!TextDirection.isRightToLeft("Hello world"))
+        #expect(!TextDirection.containsRightToLeft("Hello world"))
     }
 
-    @Test("RTL detection uses majority for mixed content")
-    func rtlMajorityVote() {
-        // Mostly Hebrew with a couple of English brand names → RTL.
-        #expect(TextDirection.isRightToLeft("זה הבדיקה של DataDog ו-PagerDuty במערכת"))
-        // Mostly English with a stray Hebrew word → LTR.
-        #expect(!TextDirection.isRightToLeft("Discussing the שלום incident in production today"))
+    @Test("RTL detection flips on any RTL character (Latin majority is ignored)")
+    func rtlAnyHebrewWins() {
+        // Hebrew-majority technical prose → RTL.
+        #expect(TextDirection.containsRightToLeft("זה הבדיקה של DataDog ו-PagerDuty במערכת"))
+        // Latin-majority prose with a single Hebrew word → still RTL.
+        // Policy: any Hebrew/Arabic glyph flips the document.
+        #expect(TextDirection.containsRightToLeft("Discussing the שלום incident in production today"))
     }
 
     @Test("RTL detection handles empty and punctuation-only strings")
     func rtlHandlesEmpty() {
-        #expect(!TextDirection.isRightToLeft(""))
-        #expect(!TextDirection.isRightToLeft("... 12:34 !!!"))
+        #expect(!TextDirection.containsRightToLeft(""))
+        #expect(!TextDirection.containsRightToLeft("... 12:34 !!!"))
     }
 
     @Test("Speaker numbering is stable (first-seen order)")

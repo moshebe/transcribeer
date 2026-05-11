@@ -5,6 +5,57 @@ import UserNotifications
 
 private let logger = Logger(subsystem: "com.transcribeer", category: "app")
 
+/// Menu items shown while recording.
+///
+/// Lives in its own `View` so rapidly-changing runner state (elapsed time,
+/// Zoom title, participant list) is mirrored into local `@State` via a polling
+/// task rather than read directly from `@Observable` properties in the menu
+/// body. `MenuBarExtra(style: .menu)` recurses to a stack overflow when the
+/// menu body observes state that changes while the menu is open — AppKit
+/// synchronously re-requests menu items on each observation, which re-observes,
+/// which loops. Polling into `@State` breaks that cycle.
+struct RecordingMenuItems: View {
+    let runner: PipelineRunner
+    let startTime: Date
+    @State private var elapsedText = "⏺ Recording  00:00"
+    @State private var title: String?
+    @State private var participants: [String] = []
+
+    var body: some View {
+        Text(elapsedText)
+        if let title {
+            Text("🎥 \(title)")
+        }
+        if !participants.isEmpty {
+            Text("👥 \(participants.joined(separator: ", "))")
+        }
+        Button("⏹ Stop Recording") {
+            runner.stopRecording()
+        }
+        .task(id: ObjectIdentifier(runner)) {
+            while !Task.isCancelled {
+                refresh()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func refresh() {
+        let elapsed = Int(Date().timeIntervalSince(startTime))
+        let text = String(format: "⏺ Recording  %02d:%02d", elapsed / 60, elapsed % 60)
+        if text != elapsedText { elapsedText = text }
+
+        let newTitle = runner.liveMeetingTitle
+        if newTitle != title { title = newTitle }
+
+        let names = runner.participantsWatcher.snapshot?
+            .participants
+            .map(\.displayName)
+            .filter { !$0.isEmpty } ?? []
+        if names != participants { participants = names }
+    }
+}
+
 /// Live state for a pending meeting auto-record countdown.
 ///
 /// Reference type so the owning view can identity-check the active countdown
@@ -26,8 +77,13 @@ struct TranscribeerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var runner = PipelineRunner()
     @State private var meetingDetector = MeetingDetector()
+    @State private var scheduler = ScheduledTranscriptionService()
     @State private var config = ConfigManager.load()
     @State private var autoRecordCountdown: AutoRecordCountdown?
+    /// Timestamp of the most recent auto-stop triggered by a meeting-ended
+    /// detection. Used to suppress detector flicker that would otherwise
+    /// spawn a second session dir seconds after the first one stopped.
+    @State private var lastMeetingAutoStopAt: Date?
 
     var body: some Scene {
         MenuBarExtra {
@@ -43,6 +99,12 @@ struct TranscribeerApp: App {
 
         Settings {
             SettingsView(config: $config)
+                .onChange(of: config.scheduledTranscriptionEnabled) { _, _ in
+                    scheduler.reschedule()
+                }
+                .onChange(of: config.scheduledTranscriptionHour) { _, _ in
+                    scheduler.reschedule()
+                }
         }
 
         Window("Recording History", id: "history") {
@@ -86,23 +148,7 @@ struct TranscribeerApp: App {
             }
 
         case .recording(let startTime):
-            TimelineView(.periodic(from: startTime, by: 1)) { context in
-                let elapsed = Int(context.date.timeIntervalSince(startTime))
-                Text("⏺ Recording  \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))")
-            }
-            if let title = runner.liveMeetingTitle {
-                Text("🎥 \(title)")
-            }
-            let names = runner.participantsWatcher.snapshot?
-                .participants
-                .map(\.displayName)
-                .filter { !$0.isEmpty } ?? []
-            if !names.isEmpty {
-                Text("👥 \(names.joined(separator: ", "))")
-            }
-            Button("⏹ Stop Recording") {
-                runner.stopRecording()
-            }
+            RecordingMenuItems(runner: runner, startTime: startTime)
 
         case .transcribing:
             if let pct = runner.transcriptionProgress {
@@ -158,6 +204,12 @@ struct TranscribeerApp: App {
     // MARK: - Lifecycle
 
     private func onFirstAppear() {
+        let trashed = SessionManager.gcAbandonedSessions(sessionsDir: config.expandedSessionsDir)
+        if !trashed.isEmpty {
+            logger.info(
+                "gc: trashed \(trashed.count, privacy: .public) abandoned session(s) at launch",
+            )
+        }
         meetingDetector.start()
         showFirstRunOnboardingIfNeeded()
 
@@ -176,6 +228,8 @@ struct TranscribeerApp: App {
         }
 
         startMeetingChangeObservation()
+
+        scheduler.start(runner: runner) { ConfigManager.load() }
 
         // Check if a meeting is already in progress at launch.
         if meetingDetector.inMeeting {
@@ -250,14 +304,44 @@ struct TranscribeerApp: App {
         let autoRecordEnabled: Bool
         let hasCountdown: Bool
         let autoStarted: Bool
+        /// True when an auto-started recording was stopped recently enough
+        /// that a re-detected meeting should be ignored as detector flicker.
+        /// See `autoRecordCooldownSeconds`.
+        let inAutoRecordCooldown: Bool
+
+        init(
+            inMeeting: Bool,
+            isRecording: Bool,
+            isBusy: Bool,
+            autoRecordEnabled: Bool,
+            hasCountdown: Bool,
+            autoStarted: Bool,
+            inAutoRecordCooldown: Bool = false,
+        ) {
+            self.inMeeting = inMeeting
+            self.isRecording = isRecording
+            self.isBusy = isBusy
+            self.autoRecordEnabled = autoRecordEnabled
+            self.hasCountdown = hasCountdown
+            self.autoStarted = autoStarted
+            self.inAutoRecordCooldown = inAutoRecordCooldown
+        }
     }
+
+    /// How long after an auto-stop a re-detected meeting is treated as
+    /// detector flicker rather than a fresh meeting. Chosen to cover Zoom's
+    /// camera-hysteresis (3s) and mic-debounce (5s) windows with margin — so
+    /// the "meeting off → meeting on" bounce during a single join doesn't
+    /// spawn a second session dir.
+    static let autoRecordCooldownSeconds: TimeInterval = 15
 
     static func meetingChangeAction(_ inputs: MeetingChangeInputs) -> MeetingChangeAction {
         if inputs.inMeeting {
-            if inputs.autoRecordEnabled, !inputs.isBusy, !inputs.hasCountdown {
+            if inputs.autoRecordEnabled, !inputs.isBusy, !inputs.hasCountdown,
+               !inputs.inAutoRecordCooldown {
                 return .scheduleAutoRecord
             }
-            if !inputs.isRecording, !inputs.hasCountdown {
+            if !inputs.isRecording, !inputs.hasCountdown, !inputs.inAutoRecordCooldown {
                 return .sendMeetingNotification
             }
             return .noop
@@ -275,13 +359,19 @@ struct TranscribeerApp: App {
             NotificationManager.cancelMeetingNotification()
         }
 
+        let appAllowed = meetingDetector.detectedApp
+            .map { config.meetingAutoRecordApps.contains($0.bundleID) } ?? false
+        let cooldown = lastMeetingAutoStopAt.map { stoppedAt in
+            Date().timeIntervalSince(stoppedAt) < Self.autoRecordCooldownSeconds
+        } ?? false
         let inputs = MeetingChangeInputs(
             inMeeting: inMeeting,
             isRecording: runner.state.isRecording,
             isBusy: runner.state.isBusy,
-            autoRecordEnabled: config.meetingAutoRecord,
+            autoRecordEnabled: config.meetingAutoRecord && appAllowed,
             hasCountdown: autoRecordCountdown != nil,
             autoStarted: runner.meetingAutoStarted,
+            inAutoRecordCooldown: cooldown,
         )
         let action = Self.meetingChangeAction(inputs)
         logger.info(
@@ -308,6 +398,7 @@ struct TranscribeerApp: App {
     private func autoStopForMeetingEnd() {
         let appName = runner.meetingAutoStartContext?.appName ?? "unknown"
         runner.appendRunLog("stop=auto reason=meeting-ended app=\(appName)")
+        lastMeetingAutoStopAt = Date()
         runner.stopRecording()
     }
 

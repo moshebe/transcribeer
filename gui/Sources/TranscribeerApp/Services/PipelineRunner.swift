@@ -404,21 +404,38 @@ final class PipelineRunner {
 
     /// Re-transcribe a session from its audio.
     ///
-    /// `languageOverride` wins over `config.language` when non-nil. Used by the
-    /// session detail view to run Hebrew on one recording while the global
-    /// default stays on English (or auto).
+    /// `languageOverride` wins over `config.language` when non-nil; same
+    /// for `backendOverride` against `config.transcriptionBackend`. The
+    /// detail view uses these to run a one-off transcription in a different
+    /// language or with a different backend (e.g. fall back to OpenAI for a
+    /// recording WhisperKit struggled with) without touching the global
+    /// config.
     func transcribeSession(
         _ session: URL,
         config: AppConfig,
-        languageOverride: String? = nil
+        languageOverride: String? = nil,
+        backendOverride: String? = nil
     ) async -> CLIResult {
         let txPath = session.appendingPathComponent("transcript.txt")
         var cfg = config
         if let languageOverride {
             cfg.language = languageOverride
         }
+        if let backendOverride, !backendOverride.isEmpty {
+            cfg.transcriptionBackend = backendOverride
+        }
 
-        logger.info("re-transcribe: \(session.path) lang=\(cfg.language)")
+        logger.info(
+            """
+            re-transcribe: \(session.path, privacy: .public) \
+            lang=\(cfg.language, privacy: .public) \
+            backend=\(cfg.transcriptionBackend, privacy: .public)
+            """
+        )
+        appendSessionLog(
+            session,
+            "re-transcribe start lang=\(cfg.language) backend=\(cfg.transcriptionBackend)"
+        )
 
         let previousState = state
         state = .transcribing
@@ -440,11 +457,29 @@ final class PipelineRunner {
             return CLIResult(ok: true, error: "")
         } catch is CancellationError {
             logger.info("re-transcribe cancelled")
+            appendSessionLog(session, "re-transcribe cancelled")
             return CLIResult(ok: false, error: "Cancelled")
         } catch {
-            logger.error("re-transcribe failed: \(error.localizedDescription)")
-            return CLIResult(ok: false, error: error.localizedDescription)
+            let detail = error.localizedDescription
+            logger.error(
+                """
+                re-transcribe failed: \(detail, privacy: .public) \
+                type=\(String(reflecting: type(of: error)), privacy: .public) \
+                raw=\(String(reflecting: error), privacy: .public)
+                """
+            )
+            appendSessionLog(session, "re-transcribe failed: \(detail)")
+            return CLIResult(ok: false, error: detail)
         }
+    }
+
+    /// Append a line to the given session's `run.log`. Used by re-run paths
+    /// so the per-session log captures retries and their failures without
+    /// requiring users to spelunk `log show`.
+    private func appendSessionLog(_ session: URL, _ message: String) {
+        SessionLogger(
+            logPath: session.appendingPathComponent("run.log")
+        ).log(message)
     }
 
     /// Optional one-shot overrides for a single re-summarize call.
@@ -512,8 +547,10 @@ final class PipelineRunner {
 
         if !result.ok, result.error == "Cancelled" {
             logger.info("re-summarize cancelled")
+            appendSessionLog(session, "re-summarize cancelled")
         } else if !result.ok {
-            logger.error("re-summarize failed: \(result.error)")
+            logger.error("re-summarize failed: \(result.error, privacy: .public)")
+            appendSessionLog(session, "re-summarize failed: \(result.error)")
         }
         return result
     }

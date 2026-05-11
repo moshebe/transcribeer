@@ -132,4 +132,190 @@ struct AudioChunkerCAFTests {
         let duration = try #require(AudioChunker.wavDuration(url: src))
         #expect(abs(duration - 3.0) < 0.01)
     }
+
+    // MARK: - Resampling
+
+    @Test("targetSampleRate downsamples 48 kHz CAF to 16 kHz WAV chunks")
+    func splitDownsamplesTo16kHz() throws {
+        // 2 s of 48 kHz mono → chunks should come out at 16 kHz mono Int16.
+        // The duration must be preserved (within rounding) and the file
+        // size should match the 16 kHz expectation, not the 48 kHz one.
+        let src = try Self.writeSilentCAF(durationSeconds: 2)
+        let tempDir = Self.makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(at: src)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let chunks = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            targetSampleRate: 16_000,
+            tempDir: tempDir
+        )
+        let chunk = try #require(chunks.first)
+        let decoded = try AVAudioFile(forReading: chunk.url)
+        #expect(decoded.processingFormat.sampleRate == 16_000)
+        #expect(decoded.processingFormat.channelCount == 1)
+        let duration = try #require(AudioChunker.wavDuration(url: chunk.url))
+        #expect(abs(duration - 2.0) < 0.05)
+
+        // 2 s mono Int16 @ 16 kHz ≈ 64 KB; @ 48 kHz it would be ~192 KB.
+        // Use a generous upper bound that still excludes the 48 kHz size.
+        let bytes = try Data(contentsOf: chunk.url).count
+        #expect(bytes < 100_000, "expected 16 kHz-sized chunk, got \(bytes) bytes")
+    }
+
+    @Test("targetSampleRate matching source rate is a no-op fast path")
+    func splitNoResampleWhenRatesMatch() throws {
+        let src = try Self.writeSilentCAF(durationSeconds: 1)
+        let tempDir = Self.makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(at: src)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let chunks = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            targetSampleRate: 48_000,
+            tempDir: tempDir
+        )
+        let chunk = try #require(chunks.first)
+        let decoded = try AVAudioFile(forReading: chunk.url)
+        #expect(decoded.processingFormat.sampleRate == 48_000)
+    }
+
+    // MARK: - AAC / M4A output
+
+    @Test("outputFormat .aacM4A writes M4A files with the ftyp magic and AAC encoding")
+    func splitWritesM4A() throws {
+        let src = try Self.writeSilentCAF(durationSeconds: 2)
+        let tempDir = Self.makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(at: src)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let chunks = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            targetSampleRate: 16_000,
+            outputFormat: .aacM4A(bitrate: 48_000),
+            tempDir: tempDir
+        )
+        let chunk = try #require(chunks.first)
+
+        // 1. File extension comes from the format enum.
+        #expect(chunk.url.pathExtension == "m4a")
+
+        // 2. MP4 "ftyp" box lives at bytes 4..8 of any well-formed M4A.
+        let header = try Data(contentsOf: chunk.url).prefix(12)
+        let ftypMagic = Data([0x66, 0x74, 0x79, 0x70]) // "ftyp"
+        #expect(
+            header.dropFirst(4).prefix(4) == ftypMagic,
+            "expected ftyp box at bytes 4..8, got \(Array(header))"
+        )
+
+        // 3. AVAudioFile can re-open it and reports the target sample rate.
+        let decoded = try AVAudioFile(forReading: chunk.url)
+        #expect(decoded.processingFormat.sampleRate == 16_000)
+        #expect(decoded.processingFormat.channelCount == 1)
+        let duration = try #require(AudioChunker.wavDuration(url: chunk.url))
+        #expect(abs(duration - 2.0) < 0.1)
+    }
+
+    @Test("AAC output is dramatically smaller than the equivalent WAV chunk")
+    func aacIsSmallerThanWAV() throws {
+        // 5 s @ 16 kHz mono Int16 WAV ≈ 160 KB; AAC @ 48 kbps mono ≈ 30 KB.
+        // Assert the ratio is at least 3:1 so the test catches accidental
+        // re-routing of the cloud path back to WAV.
+        let src = try Self.writeSilentCAF(durationSeconds: 5)
+        let tempDir = Self.makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(at: src)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let wav = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            targetSampleRate: 16_000,
+            outputFormat: .wavInt16,
+            tempDir: tempDir.appendingPathComponent("wav"),
+        )
+        let aac = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            targetSampleRate: 16_000,
+            outputFormat: .aacM4A(bitrate: 48_000),
+            tempDir: tempDir.appendingPathComponent("aac"),
+        )
+        let wavBytes = try Data(contentsOf: #require(wav.first).url).count
+        let aacBytes = try Data(contentsOf: #require(aac.first).url).count
+        #expect(
+            aacBytes * 3 < wavBytes,
+            "AAC (\(aacBytes) B) was not at least 3× smaller than WAV (\(wavBytes) B)"
+        )
+    }
+
+    // MARK: - Tail handling
+
+    @Test("a sub-second tail is folded into the previous chunk, not emitted standalone")
+    func tailFoldsIntoPriorChunk() throws {
+        // Source duration = chunkDuration + 0.3 s. Without fold, we'd get
+        // [10 s, 0.3 s] and the 0.3 s chunk would trip OpenAI's 0.1 s floor.
+        // With fold, we get a single 10.3 s chunk.
+        let src = try Self.writeSilentCAF(durationSeconds: 10.3)
+        let tempDir = Self.makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(at: src)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let chunks = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            tempDir: tempDir
+        )
+        #expect(chunks.count == 1)
+        let chunk = try #require(chunks.first)
+        let duration = try #require(AudioChunker.wavDuration(url: chunk.url))
+        #expect(abs(duration - 10.3) < 0.05)
+    }
+
+    @Test("a source shorter than the API minimum produces zero chunks")
+    func subMinimumSourceYieldsNoChunks() throws {
+        // 0.5 s is below `minChunkSeconds` (1 s) so the chunker must skip
+        // the slice entirely. Caller treats the empty result as "silent".
+        let src = try Self.writeSilentCAF(durationSeconds: 0.5)
+        let tempDir = Self.makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(at: src)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let chunks = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            tempDir: tempDir
+        )
+        #expect(chunks.isEmpty)
+    }
+
+    @Test("default outputFormat stays .wavInt16 so the local path is unchanged")
+    func defaultOutputIsWAV() throws {
+        let src = try Self.writeSilentCAF(durationSeconds: 1)
+        let tempDir = Self.makeTempDir()
+        defer {
+            try? FileManager.default.removeItem(at: src)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let chunks = try AudioChunker.split(
+            source: src,
+            chunkDuration: 10,
+            tempDir: tempDir
+        )
+        let chunk = try #require(chunks.first)
+        #expect(chunk.url.pathExtension == "wav")
+        let header = try Data(contentsOf: chunk.url).prefix(4)
+        #expect(header == Data([0x52, 0x49, 0x46, 0x46])) // RIFF
+    }
 }

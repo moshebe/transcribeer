@@ -9,6 +9,9 @@ struct AppConfigTests {
         let cfg = AppConfig()
         #expect(cfg.language == "auto")
         #expect(cfg.whisperModel == "openai_whisper-large-v3_turbo")
+        #expect(cfg.transcriptionBackend == "whisperkit")
+        #expect(cfg.openaiTranscriptionModel == "whisper-1")
+        #expect(cfg.geminiTranscriptionModel == "gemini-2.5-flash")
         #expect(cfg.diarization == "pyannote")
         #expect(cfg.numSpeakers == 0)
         #expect(cfg.llmBackend == "ollama")
@@ -18,6 +21,24 @@ struct AppConfigTests {
         #expect(cfg.pipelineMode == "record+transcribe+summarize")
         #expect(!cfg.meetingAutoRecord)
         #expect(cfg.promptOnStop)
+    }
+
+    @Test("Transcription backend + cloud models round-trip via TOMLDecoder")
+    func transcriptionBackendRoundTrip() throws {
+        let doc = """
+        [transcription]
+        language = "en"
+        backend = "openai"
+        model = "openai_whisper-large-v3_turbo"
+        openai_model = "gpt-4o-transcribe"
+        gemini_model = "gemini-2.5-pro"
+        diarization = "none"
+        num_speakers = 0
+        """
+        let decoded = try TOMLDecoder().decode(TOMLFile.self, from: Data(doc.utf8))
+        #expect(decoded.transcription?.backend == "openai")
+        #expect(decoded.transcription?.openai_model == "gpt-4o-transcribe")
+        #expect(decoded.transcription?.gemini_model == "gemini-2.5-pro")
     }
 
     @Test("expandedSessionsDir resolves tilde to home directory")
@@ -73,10 +94,7 @@ struct AppConfigTests {
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         let path = tmpDir.appendingPathComponent("config.toml")
 
-        defer {
-            // swiftlint:disable:next force_try
-            try! FileManager.default.removeItem(at: tmpDir)
-        }
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
 
         // Use reflection or direct write since ConfigManager.configPath is static
         let lines = """

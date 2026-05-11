@@ -14,6 +14,7 @@ struct TranscribeerAppMeetingChangeActionTests {
         autoRecordEnabled: Bool = true,
         hasCountdown: Bool = false,
         autoStarted: Bool = false,
+        inAutoRecordCooldown: Bool = false,
     ) -> Inputs {
         Inputs(
             inMeeting: inMeeting,
@@ -22,6 +23,7 @@ struct TranscribeerAppMeetingChangeActionTests {
             autoRecordEnabled: autoRecordEnabled,
             hasCountdown: hasCountdown,
             autoStarted: autoStarted,
+            inAutoRecordCooldown: inAutoRecordCooldown,
         )
     }
 
@@ -98,6 +100,30 @@ struct TranscribeerAppMeetingChangeActionTests {
                 isBusy: true,
                 autoRecordEnabled: false,
                 autoStarted: true,
+            ),
+        )
+        #expect(action == .noop)
+    }
+
+    // MARK: - Auto-record cooldown (detector flicker suppression)
+
+    @Test("Meeting-start within the auto-record cooldown is a noop")
+    func startWithinCooldownIsNoop() {
+        // Classic flicker: auto-stopped seconds ago, detector bounces back to
+        // `inMeeting=true` — suppress so we don't spawn a second session.
+        let action = TranscribeerApp.meetingChangeAction(
+            inputs(inMeeting: true, inAutoRecordCooldown: true),
+        )
+        #expect(action == .noop)
+    }
+
+    @Test("Cooldown also suppresses the manual meeting-started notification")
+    func startWithinCooldownSuppressesNotification() {
+        let action = TranscribeerApp.meetingChangeAction(
+            inputs(
+                inMeeting: true,
+                autoRecordEnabled: false,
+                inAutoRecordCooldown: true,
             ),
         )
         #expect(action == .noop)

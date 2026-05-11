@@ -3,6 +3,9 @@ import SwiftUI
 import TranscribeerCore
 import UniformTypeIdentifiers
 
+// Existing coordinator view owns history selection, detail, import, and pipeline bindings;
+// splitting it safely is a separate refactor from this crash fix.
+// swiftlint:disable:next type_body_length
 struct HistoryView: View {
     @Binding var config: AppConfig
     let runner: PipelineRunner
@@ -21,6 +24,12 @@ struct HistoryView: View {
     /// the `selectedSessionIDs` observer can skip reloads when the effective
     /// single-selection hasn't changed.
     @State private var lastLoadedDetailID: String?
+    /// Cached availability for transcription backends. Drives the disabled
+    /// state of cloud backends in the sidebar's right-click Transcribe
+    /// submenu so users see *why* OpenAI/Gemini are greyed out (no API key)
+    /// without having to open Settings first. Refreshed on appear and
+    /// whenever the default backend changes in config.
+    @State private var transcriptionAvailability = TranscriptionBackendAvailability.localOnly
 
     /// Single selection helper — `nil` when zero or multiple rows are selected.
     /// Used to decide whether to render the detail pane or a multi-select
@@ -55,6 +64,7 @@ struct HistoryView: View {
             profiles = PromptProfileManager.listProfiles()
             DockVisibility.windowDidAppear()
         }
+        .task(id: config.transcriptionBackend) { await refreshTranscriptionAvailability() }
         .onDisappear {
             DockVisibility.windowDidDisappear()
         }
@@ -78,6 +88,14 @@ struct HistoryView: View {
         }
         .onChange(of: selectedSessionIDs) { _, _ in
             reloadForSelectionChange()
+        }
+        // Refresh the profile dropdown whenever Settings adds, renames, or
+        // deletes a profile. Without this the dropdown is stuck on whatever
+        // was on disk when the window first opened.
+        .onReceive(
+            NotificationCenter.default.publisher(for: PromptProfileManager.didChangeNotification)
+        ) { _ in
+            profiles = PromptProfileManager.listProfiles()
         }
     }
 
@@ -118,7 +136,8 @@ struct HistoryView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Accessibility permission not granted")
                         .font(.headline)
-                    Text("Zoom meeting titles and participants won't be captured until Transcribeer is enabled in System Settings → Privacy & Security → Accessibility.")
+                    Text("Zoom meeting titles and participants won't be captured until Transcribeer "
+                        + "is enabled in System Settings → Privacy & Security → Accessibility.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -407,15 +426,7 @@ struct HistoryView: View {
                     ForEach(group.sessions) { session in
                         SessionRow(session: session)
                             .tag(session.id)
-                            .contextMenu {
-                                Button("Reveal in Finder") {
-                                    NSWorkspace.shared.open(session.path)
-                                }
-                                Divider()
-                                Button(deleteMenuTitle(for: session), role: .destructive) {
-                                    sessionsPendingDeletion = deletionTargets(for: session)
-                                }
-                            }
+                            .contextMenu { contextMenuItems(for: session) }
                     }
                 }
             }
@@ -441,6 +452,32 @@ struct HistoryView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(deletionDialogMessage)
+        }
+    }
+
+    /// Sidebar right-click menu — Reveal in Finder, transcribe/summarize
+    /// submenus (`SessionContextActions`), then Delete. Built inline because
+    /// `contextMenu` accepts a single `@ViewBuilder` closure and inlining
+    /// every item bloats the parent `ForEach`.
+    @ViewBuilder
+    private func contextMenuItems(for session: Session) -> some View {
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.open(session.path)
+        }
+        Divider()
+        SessionContextActions(
+            session: session,
+            profiles: profiles,
+            defaultBackend: TranscriptionBackend.from(config.transcriptionBackend),
+            availability: transcriptionAvailability,
+            isTranscribingThis: runner.transcribingSession == session.path,
+            isSummarizingThis: runner.summarizingSession == session.path,
+            onTranscribe: { transcribe(session: session, request: $0) },
+            onSummarize: { summarize(session: session, request: $0) }
+        )
+        Divider()
+        Button(deleteMenuTitle(for: session), role: .destructive) {
+            sessionsPendingDeletion = deletionTargets(for: session)
         }
     }
 
@@ -493,54 +530,11 @@ struct HistoryView: View {
                 onSaveNotes: { newNotes in
                     SessionManager.setNotes(session.path, newNotes)
                 },
-                onTranscribe: { languageOverride in
-                    statusText = ""
-                    // Capture the session URL explicitly so the completion
-                    // handler reloads the *right* detail even if
-                    // `selectedSessionID` changes while the transcription is
-                    // running (e.g. user clicks a different sidebar row).
-                    let targetSession = session.path
-                    Task {
-                        let result = await runner.transcribeSession(
-                            targetSession,
-                            config: config,
-                            languageOverride: languageOverride
-                        )
-                        statusText = result.ok
-                            ? "Transcription done."
-                            : "Transcription failed: \(result.error)"
-                        // Reload detail here as a backstop — the primary
-                        // refresh is the `onChange(of: runner.transcribingSession)`
-                        // observer above, which fires regardless of whether
-                        // this Task continuation is still on the expected
-                        // session. Idempotent: reading transcript.txt twice
-                        // is cheap.
-                        if selectedSessionID == targetSession.path {
-                            loadDetail(sessionID: targetSession.path)
-                        }
-                    }
+                onTranscribe: { request in
+                    transcribe(session: session, request: request)
                 },
                 onSummarize: { request in
-                    statusText = "Summarizing…"
-                    let targetSession = session.path
-                    Task {
-                        let result = await runner.summarizeSession(
-                            targetSession,
-                            config: config,
-                            profile: request.profile,
-                            overrides: .init(
-                                backend: request.backend,
-                                model: request.model,
-                                focus: request.focus
-                            )
-                        )
-                        statusText = result.ok
-                            ? "Summary done."
-                            : "Summarization failed: \(result.error)"
-                        if selectedSessionID == targetSession.path {
-                            loadDetail(sessionID: targetSession.path)
-                        }
-                    }
+                    summarize(session: session, request: request)
                 },
                 onOpenDir: {
                     NSWorkspace.shared.open(session.path)
@@ -657,91 +651,60 @@ struct HistoryView: View {
             return "\(deleted) deleted; failed: \(failed.joined(separator: ", "))"
         }
     }
+
+    // MARK: - Pipeline actions
+
+    // Shared pipeline entry points for the detail-pane buttons and the
+    // sidebar right-click submenus. Status text + post-run detail reload
+    // mirror the original closure wiring; the `selectedSessionID` check is
+    // a backstop — the primary refresh is `onChange(of: runner.…Session)`.
+    private func transcribe(session: Session, request: SessionDetailView.TranscribeRequest) {
+        statusText = ""
+        let target = session.path
+        Task {
+            let result = await runner.transcribeSession(
+                target,
+                config: config,
+                languageOverride: request.language,
+                backendOverride: request.backend
+            )
+            statusText = result.ok ? "Transcription done." : "Transcription failed: \(result.error)"
+            if selectedSessionID == target.path { loadDetail(sessionID: target.path) }
+        }
+    }
+
+    private func summarize(session: Session, request: SessionDetailView.SummaryRequest) {
+        statusText = "Summarizing…"
+        let target = session.path
+        let overrides = PipelineRunner.SummarizeOverrides(
+            backend: request.backend,
+            model: request.model,
+            focus: request.focus
+        )
+        Task {
+            let result = await runner.summarizeSession(
+                target,
+                config: config,
+                profile: request.profile,
+                overrides: overrides
+            )
+            statusText = result.ok ? "Summary done." : "Summarization failed: \(result.error)"
+            if selectedSessionID == target.path { loadDetail(sessionID: target.path) }
+        }
+    }
+
+    @MainActor
+    private func refreshTranscriptionAvailability() async {
+        let resolved = await Task.detached(priority: .utility) {
+            TranscriptionBackendAvailability.resolve()
+        }.value
+        guard !Task.isCancelled else { return }
+        transcriptionAvailability = resolved
+    }
 }
 
 // MARK: - Session row
-
-private struct SessionRow: View {
-    let session: Session
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(session.name)
-                    .font(.system(size: 13, weight: session.isUntitled ? .regular : .semibold))
-                    .foregroundStyle(session.isUntitled ? .secondary : .primary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                artifactIcons
-            }
-
-            // Untitled rows lean on the date/time line for identity. Once a
-            // session has a user-given title it shows on line 1, so the
-            // secondary date line becomes redundant noise — drop it and keep
-            // just the language badge (if any).
-            if session.isUntitled || languageBadge != nil {
-                HStack(spacing: 4) {
-                    if session.isUntitled {
-                        Text(SessionDateFormatter.sidebarLine(for: session))
-                    }
-                    if let badge = languageBadge {
-                        Text(badge)
-                            .font(.system(size: 9, weight: .medium))
-                            .tracking(0.5)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
-                    }
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            }
-
-            if !session.snippet.isEmpty {
-                Text(session.snippet)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .italic()
-                    .lineLimit(1)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    /// Small glyph trio on the right of each row showing which artifacts
-    /// exist for the session: audio, transcript, summary. A dimmed glyph
-    /// means the artifact is missing — so users can see at a glance whether
-    /// a session still needs transcribing or summarizing.
-    @ViewBuilder
-    private var artifactIcons: some View {
-        HStack(spacing: 4) {
-            artifactIcon(
-                systemName: "waveform",
-                present: session.hasAudio,
-                help: session.hasAudio ? "Audio recorded" : "No audio"
-            )
-            artifactIcon(
-                systemName: "text.alignleft",
-                present: session.hasTranscript,
-                help: session.hasTranscript ? "Transcript available" : "Not transcribed"
-            )
-            artifactIcon(
-                systemName: "sparkles",
-                present: session.hasSummary,
-                help: session.hasSummary ? "Summary available" : "Not summarized"
-            )
-        }
-    }
-
-    private func artifactIcon(systemName: String, present: Bool, help: String) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(present ? Color.accentColor : Color.secondary.opacity(0.35))
-            .help(help)
-            .accessibilityLabel(help)
-    }
-
-    private var languageBadge: String? {
-        session.language.flatMap { TranscriptionLanguage.from($0).badgeText }
-    }
-}
+//
+// `SessionRow` itself lives in `SessionRow.swift` so this file stays under
+// SwiftLint's file-length cap. Nothing else moves — the row is internal so
+// `HistoryView` can keep referencing it as before.

@@ -21,7 +21,7 @@ public struct AppConfig: Equatable, Sendable {
     public struct AudioSettings: Equatable, Sendable {
         public var inputDeviceUID: String = ""
         public var outputDeviceUID: String = ""
-        public var aec: Bool = true
+        public var aec: Bool = false
         public var selfLabel: String = "You"
         public var otherLabel: String = "Them"
         public var diarizeMicMultiuser: Bool = false
@@ -194,7 +194,7 @@ public enum ConfigManager {
             case "\u{08}": escaped += "\\b"
             case "\u{0C}": escaped += "\\f"
             default:
-                let scalar = ch.unicodeScalars.first.map { $0.value } ?? 0
+                let scalar = ch.unicodeScalars.first.map(\.value) ?? 0
                 if scalar < 0x20 || scalar == 0x7F {
                     escaped += String(format: "\\u%04X", scalar)
                 } else {

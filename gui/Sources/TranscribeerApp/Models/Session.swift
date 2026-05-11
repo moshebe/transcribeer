@@ -385,6 +385,68 @@ enum SessionManager {
         (try? FileManager.default.trashItem(at: dir, resultingItemURL: nil)) != nil
     }
 
+    /// Sweep abandoned session directories. Moves to Trash any session that:
+    /// - has no `audio.m4a` / `audio.wav` (pipeline never merged capture),
+    /// - has no `transcript.txt` / `summary.md` (no downstream artifact to
+    ///   salvage), and
+    /// - is older than `minAge` (defensive — prevents clobbering a recording
+    ///   that started moments before launch if the app is restarted fast).
+    ///
+    /// Meant to run once at app launch to clean up sessions left behind by
+    /// auto-record flicker (Zoom camera toggling creates multiple short-lived
+    /// start attempts that never complete).
+    ///
+    /// Returns the list of directories that were trashed.
+    @discardableResult
+    static func gcAbandonedSessions(
+        sessionsDir: String,
+        now: Date = Date(),
+        minAge: TimeInterval = 60,
+    ) -> [URL] {
+        let dir = URL(fileURLWithPath: (sessionsDir as NSString).expandingTildeInPath)
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
+            options: .skipsHiddenFiles,
+        ) else { return [] }
+
+        var trashed: [URL] = []
+        for entry in contents {
+            guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
+                  isAbandoned(sessionDir: entry, now: now, minAge: minAge)
+            else { continue }
+            if (try? FileManager.default.trashItem(at: entry, resultingItemURL: nil)) != nil {
+                trashed.append(entry)
+            }
+        }
+        return trashed
+    }
+
+    /// Pure predicate, exposed for tests. A session is abandoned when it has
+    /// neither a canonical audio artifact nor a transcript/summary, and is old
+    /// enough that we're confident it's not an in-flight recording.
+    static func isAbandoned(
+        sessionDir: URL,
+        now: Date = Date(),
+        minAge: TimeInterval = 60,
+    ) -> Bool {
+        let fm = FileManager.default
+        let hasM4A = fm.fileExists(atPath: sessionDir.appendingPathComponent("audio.m4a").path)
+        let hasWAV = fm.fileExists(atPath: sessionDir.appendingPathComponent("audio.wav").path)
+        let hasTranscript = fm.fileExists(
+            atPath: sessionDir.appendingPathComponent("transcript.txt").path,
+        )
+        let hasSummary = fm.fileExists(
+            atPath: sessionDir.appendingPathComponent("summary.md").path,
+        )
+        if hasM4A || hasWAV || hasTranscript || hasSummary { return false }
+
+        let meta = readMeta(sessionDir)
+        let startedAt = parseDate(meta["startedAt"])
+        let referenceDate = startedAt ?? creationDate(of: sessionDir)
+        return now.timeIntervalSince(referenceDate) >= minAge
+    }
+
     // MARK: - Helpers
 
     private static let dateFormatter: DateFormatter = {

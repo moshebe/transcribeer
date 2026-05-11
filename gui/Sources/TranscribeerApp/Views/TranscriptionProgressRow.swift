@@ -20,7 +20,10 @@ struct TranscriptionProgressRow: View {
             Text(progressLabel)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .frame(minWidth: 140, alignment: .leading)
+                .help(progressLabel)
 
             if let mic = runner.transcriptionService.micProgress,
                let sys = runner.transcriptionService.sysProgress {
@@ -100,8 +103,15 @@ struct TranscriptionProgressRow: View {
         return String(format: "%02d:%02d", clamped / 60, clamped % 60)
     }
 
+    /// Top-level status text shown to the left of the bar. Prefers the
+    /// cloud-path `transcriptionPhase` when available ("Transcribing 3 of
+    /// 6 chunks · OpenAI"), falling back to the legacy model-state label
+    /// for local WhisperKit transcription and idle/loading states.
     private var progressLabel: String {
         if runner.isCancelling { return "Cancelling…" }
+        if let phase = runner.transcriptionService.transcriptionPhase {
+            return phase
+        }
         if runner.transcriptionProgress != nil { return "Transcribing…" }
         return switch runner.transcriptionService.modelState {
         case .downloading: "Downloading model…"

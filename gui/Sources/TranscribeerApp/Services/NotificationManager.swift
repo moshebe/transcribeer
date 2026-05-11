@@ -68,6 +68,13 @@ enum NotificationManager {
         postTransient(title: "Transcribeer error", body: message)
     }
 
+    static func notifyScheduledBatch(count: Int) {
+        let body = count == 1
+            ? "Processed 1 recording from yesterday."
+            : "Processed \(count) recordings from yesterday."
+        postTransient(title: "Overnight transcriptions complete", body: body)
+    }
+
     /// "Meeting in progress" prompt — offered while idle, with a Start Recording action.
     static func sendMeetingNotification(appName: String?) {
         let content = UNMutableNotificationContent()
@@ -84,12 +91,7 @@ enum NotificationManager {
 
     static func notifyMeetingAutoRecordStarted(appName: String?, title: String?) {
         let heading = appName.map { "Recording \($0) meeting" } ?? "Recording meeting"
-        let body: String
-        if let title, !title.isEmpty {
-            body = title
-        } else {
-            body = "Auto-record started."
-        }
+        let body = if let title, !title.isEmpty { title } else { "Auto-record started." }
         postTransient(title: heading, body: body)
     }
 
@@ -106,10 +108,10 @@ enum NotificationManager {
         let content = UNMutableNotificationContent()
         let appSuffix = appName.map { " \($0)" } ?? ""
         content.title = "Auto-recording\(appSuffix) in \(secondsRemaining)s"
-        if let title, !title.isEmpty {
-            content.body = "\(title) — tap Cancel to skip."
+        content.body = if let title, !title.isEmpty {
+            "\(title) — tap Cancel to skip."
         } else {
-            content.body = "Tap Cancel to skip auto-record."
+            "Tap Cancel to skip auto-record."
         }
         content.categoryIdentifier = meetingCountdownCategory
         content.interruptionLevel = .timeSensitive

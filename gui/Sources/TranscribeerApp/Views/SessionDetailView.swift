@@ -13,7 +13,7 @@ struct SessionDetailView: View {
     @Binding var statusText: String
     let onRename: (String) -> Void
     let onSaveNotes: (String) -> Void
-    let onTranscribe: (String?) -> Void
+    let onTranscribe: (TranscribeRequest) -> Void
     let onSummarize: (SummaryRequest) -> Void
     let onOpenDir: () -> Void
     let onDelete: () -> Void
@@ -27,6 +27,14 @@ struct SessionDetailView: View {
         var backend: String?
         var model: String?
         var focus: String?
+    }
+
+    /// Per-call overrides for re-transcribe. `nil` means "use the app-wide
+    /// default". `language` is the Whisper-style code, `backend` is the
+    /// `TranscriptionBackend` raw value.
+    struct TranscribeRequest {
+        var language: String?
+        var backend: String?
     }
 
     @State private var name: String = ""
@@ -231,32 +239,15 @@ struct SessionDetailView: View {
     @ViewBuilder
     private var contextualAction: some View {
         switch activeTab {
-        case .summary:
-            summaryTabBarAction
-
+        case .summary: summaryTabBarAction
         case .transcript:
-            HStack(spacing: 8) {
-                Picker("Language", selection: $selectedLanguage) {
-                    ForEach(TranscriptionLanguage.allCases) { option in
-                        Text(option == .auto ? "Default" : option.displayName).tag(option)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
-                .controlSize(.small)
-                .help("Override the transcription language — 'Default' uses the language from Settings")
-
-                Button {
-                    onTranscribe(selectedLanguage.whisperCode)
-                } label: {
-                    Label("Re-transcribe", systemImage: "waveform.badge.magnifyingglass")
-                }
-                .controlSize(.small)
-                .disabled(!detail.canTranscribe)
-            }
-
-        case .notes:
-            EmptyView()
+            RetranscribeMenu(
+                config: config,
+                language: $selectedLanguage,
+                canTranscribe: detail.canTranscribe,
+                onTranscribe: onTranscribe,
+            )
+        case .notes: EmptyView()
         }
     }
 

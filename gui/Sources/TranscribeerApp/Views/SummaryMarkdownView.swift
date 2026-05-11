@@ -16,6 +16,14 @@ struct SummaryMarkdownView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
+            // Apply the RTL flip to the content only — keep the toggle
+            // button pinned to the top-right corner regardless of script.
+            // Setting `layoutDirection` on a `Group` wrapper didn't always
+            // propagate into `MarkdownUI`'s nested `BlockSequence` / `Text`
+            // views (bullets and headings stayed LTR). Pushing the
+            // environment directly onto each branch — and also onto the
+            // inner `Markdown` view — is what actually flips block-level
+            // layout, list markers and paragraph alignment.
             Group {
                 if showSource {
                     sourceView
@@ -30,7 +38,18 @@ struct SummaryMarkdownView: View {
         }
     }
 
-    private var isRTL: Bool { TextDirection.isRightToLeft(text) }
+    /// Any Hebrew/Arabic/etc. character flips the whole summary to RTL.
+    /// Summaries routinely mix Latin technical terms into RTL prose; a
+    /// strict majority vote leaves them rendered LTR, which is what the
+    /// previous implementation got wrong.
+    private var isRTL: Bool { TextDirection.containsRightToLeft(text) }
+
+    private var layoutDirection: LayoutDirection { isRTL ? .rightToLeft : .leftToRight }
+
+    /// Pair the layout flip with a Hebrew locale so SwiftUI's natural
+    /// alignment heuristics (and any locale-aware bidi defaults) line up
+    /// with what we're forcing visually.
+    private var locale: Locale { isRTL ? Locale(identifier: "he") : .current }
 
     private var richView: some View {
         ScrollView {
@@ -39,18 +58,26 @@ struct SummaryMarkdownView: View {
                     FontSize(13)
                 }
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: isRTL ? .trailing : .leading)
-                .multilineTextAlignment(isRTL ? .trailing : .leading)
-                .environment(\.layoutDirection, isRTL ? .rightToLeft : .leftToRight)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // `.leading` under an RTL env resolves to the right edge,
+                // which is what we want for Hebrew. Using `.trailing` would
+                // flush wrapped lines to the left.
+                .multilineTextAlignment(.leading)
+                .environment(\.layoutDirection, layoutDirection)
+                .environment(\.locale, locale)
                 .padding(16)
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .environment(\.layoutDirection, layoutDirection)
+        .environment(\.locale, locale)
     }
 
     private var sourceView: some View {
         HighlightedTextEditor(text: readonlyBinding, highlightRules: .markdown)
             .introspect { editor in configure(editor.textView) }
             .background(Color(nsColor: .textBackgroundColor))
+            .environment(\.layoutDirection, layoutDirection)
+            .environment(\.locale, locale)
     }
 
     private var toggleButton: some View {

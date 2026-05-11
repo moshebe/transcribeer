@@ -34,6 +34,33 @@ final class TranscriptionService {
     /// Progress for the system-audio source in a dual-source transcription.
     var sysProgress: Double?
 
+    /// Per-source progress snapshots from the cloud tracker. Carry chunk
+    /// counts in addition to the fraction so the UI can render
+    /// "Transcribing N of M chunks". `nil` outside cloud transcription.
+    var micSnapshot: CloudProgressTracker.Snapshot?
+    var sysSnapshot: CloudProgressTracker.Snapshot?
+
+    /// Display name of the active cloud backend ("OpenAI", "Gemini"). Set
+    /// at the start of `transcribeCloud` and cleared on completion so
+    /// `transcriptionPhase` can mention which API is being hit.
+    var cloudBackendName: String?
+
+    /// Human-readable description of what the transcription pipeline is
+    /// doing right now. SwiftUI re-reads this whenever the underlying
+    /// snapshots change. Returns `nil` when there's nothing useful to show
+    /// (so the view falls back to the legacy "Transcribing…" label).
+    var transcriptionPhase: String? {
+        guard let backendName = cloudBackendName else { return nil }
+        let snapshots = [micSnapshot, sysSnapshot].compactMap { $0 }
+        let total = snapshots.reduce(0) { $0 + $1.total }
+        guard total > 0 else { return "Preparing audio…" }
+        let completed = snapshots.reduce(0) { $0 + $1.completed }
+        if completed == total { return "Finalizing transcript…" }
+        let inFlight = snapshots.reduce(0) { $0 + $1.inFlight }
+        if completed == 0, inFlight == 0 { return "Uploading to \(backendName)…" }
+        return "Transcribing \(completed + 1) of \(total) chunks · \(backendName)"
+    }
+
     /// Current state of the loaded model.
     var modelState: ModelState = .unloaded
 
@@ -50,6 +77,7 @@ final class TranscriptionService {
     /// The currently running transcription. Stored so the caller can cancel it.
     private var activeTask: Task<[TranscriptSegment], Error>?
     private var dualTask: Task<[TranscribeerCore.LabeledSegment], Error>?
+    private var cloudTask: Task<[LabeledSegment], Error>?
 
     private static let modelsDir: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -153,23 +181,52 @@ final class TranscriptionService {
         return allPresent ? folder : nil
     }
 
-    /// Transcribe a session directory, choosing dual-source or legacy path
-    /// automatically based on which files exist.
+    /// Transcribe a session directory.
+    ///
+    /// Picks the backend from `config.transcriptionBackend`:
+    /// - `whisperkit` runs locally via `DualSourceTranscriber` (current path).
+    /// - `openai` / `gemini` call the cloud API per audio source and merge
+    ///   segments using the same timing/labelling rules.
     ///
     /// - Returns: Formatted transcript text.
     func transcribe(session: URL, config: AppConfig) async throws -> String {
-        let timingURL = session.appendingPathComponent("timing.json")
-        let timing: DualSourceTranscriber.TimingInfo
-        if FileManager.default.fileExists(atPath: timingURL.path) {
-            let metadata = try TimingMetadata.read(from: timingURL)
-            timing = .init(
-                micStartEpoch: metadata.micStartEpoch,
-                sysStartEpoch: metadata.sysStartEpoch
+        let timing = try readTiming(from: session)
+        let backend = TranscriptionBackend.from(config.transcriptionBackend)
+        switch backend {
+        case .whisperkit:
+            return try await transcribeLocal(session: session, config: config, timing: timing)
+        case .openai, .gemini:
+            return try await transcribeCloud(
+                session: session,
+                config: config,
+                timing: timing,
+                backend: backend
             )
-        } else {
-            timing = .init(micStartEpoch: nil, sysStartEpoch: nil)
         }
+    }
 
+    /// Read `timing.json` if present. Returns nil-anchored timing when the
+    /// file is missing; throws when the file exists but cannot be parsed so
+    /// data corruption is surfaced rather than masked.
+    private func readTiming(from session: URL) throws -> DualSourceTranscriber.TimingInfo {
+        let timingURL = session.appendingPathComponent("timing.json")
+        guard FileManager.default.fileExists(atPath: timingURL.path) else {
+            return .init(micStartEpoch: nil, sysStartEpoch: nil)
+        }
+        let metadata = try TimingMetadata.read(from: timingURL)
+        return .init(
+            micStartEpoch: metadata.micStartEpoch,
+            sysStartEpoch: metadata.sysStartEpoch
+        )
+    }
+
+    // MARK: - Local (WhisperKit)
+
+    private func transcribeLocal(
+        session: URL,
+        config: AppConfig,
+        timing: DualSourceTranscriber.TimingInfo
+    ) async throws -> String {
         var coreCfg = TranscribeerCore.AppConfig()
         coreCfg.language = config.language
         coreCfg.whisperModel = config.whisperModel
@@ -184,28 +241,21 @@ final class TranscriptionService {
         sysProgress = 0
         liveSegments = []
 
+        let onMicProgress: @Sendable (Double) -> Void = { value in
+            Task { @MainActor in self.applyMicProgress(value) }
+        }
+        let onSysProgress: @Sendable (Double) -> Void = { value in
+            Task { @MainActor in self.applySysProgress(value) }
+        }
         let task = Task.detached(priority: .userInitiated) { () -> [TranscribeerCore.LabeledSegment] in
             try Task.checkCancellation()
-            let segments = try await DualSourceTranscriber.transcribe(
+            return try await DualSourceTranscriber.transcribe(
                 session: session,
                 cfg: coreCfg,
                 timing: timing,
-                onMicProgress: { value in
-                    Task { @MainActor in
-                        guard self.micProgress != value else { return }
-                        self.micProgress = value
-                        self.updateCombinedProgress()
-                    }
-                },
-                onSysProgress: { value in
-                    Task { @MainActor in
-                        guard self.sysProgress != value else { return }
-                        self.sysProgress = value
-                        self.updateCombinedProgress()
-                    }
-                }
+                onMicProgress: onMicProgress,
+                onSysProgress: onSysProgress
             )
-            return segments
         }
         dualTask = task
 
@@ -222,24 +272,131 @@ final class TranscriptionService {
             task.cancel()
         }
 
-        liveSegments = segments.map { seg in
-            TranscriptSegment(
-                start: seg.start,
-                end: seg.end,
-                text: seg.text,
-                speaker: seg.speaker
+        let appSegments = segments.map(Self.toLabeledSegment)
+        liveSegments = appSegments.map(Self.toLiveSegment)
+        return TranscriptFormatter.formatDual(appSegments)
+    }
+
+    // MARK: - Cloud (OpenAI / Gemini)
+
+    /// Cloud-backend equivalent of the local dual-source path. Calls the API
+    /// once per present audio source, applies wall-clock offsets, tags mic
+    /// segments as `selfLabel` and sys segments as `otherLabel`, then
+    /// interleaves by start time.
+    private func transcribeCloud(
+        session: URL,
+        config: AppConfig,
+        timing: DualSourceTranscriber.TimingInfo,
+        backend: TranscriptionBackend
+    ) async throws -> String {
+        let micURL = session.appendingPathComponent("audio.mic.caf")
+        let sysURL = session.appendingPathComponent("audio.sys.caf")
+        let mixedURL = session.appendingPathComponent("audio.m4a")
+        let fileManager = FileManager.default
+        let hasMic = fileManager.fileExists(atPath: micURL.path)
+        let hasSys = fileManager.fileExists(atPath: sysURL.path)
+        let hasMixed = fileManager.fileExists(atPath: mixedURL.path)
+
+        let model = backend == .openai
+            ? config.openaiTranscriptionModel
+            : config.geminiTranscriptionModel
+
+        progress = 0
+        micProgress = hasMic ? 0 : nil
+        sysProgress = hasSys ? 0 : nil
+        micSnapshot = nil
+        sysSnapshot = nil
+        cloudBackendName = backend.displayName
+        liveSegments = []
+
+        let onMicProgress: @Sendable (CloudProgressTracker.Snapshot) -> Void = { snap in
+            Task { @MainActor in self.applyMicSnapshot(snap) }
+        }
+        let onSysProgress: @Sendable (CloudProgressTracker.Snapshot) -> Void = { snap in
+            Task { @MainActor in self.applySysSnapshot(snap) }
+        }
+        let dualCfg = CloudTranscriptionCoordinator.DualConfig(
+            backend: backend,
+            micURL: hasMic ? micURL : nil,
+            sysURL: hasSys ? sysURL : nil,
+            timing: timing,
+            model: model,
+            language: config.language,
+            selfLabel: config.audio.selfLabel,
+            otherLabel: config.audio.otherLabel,
+            onMicProgress: onMicProgress,
+            onSysProgress: onSysProgress
+        )
+        let task = Task.detached(priority: .userInitiated) { () -> [LabeledSegment] in
+            try Task.checkCancellation()
+            if hasMic || hasSys {
+                return try await CloudTranscriptionCoordinator.runDual(dualCfg)
+            }
+            guard hasMixed else { return [] }
+            return try await CloudTranscriptionCoordinator.runMixed(
+                backend: backend,
+                audioURL: mixedURL,
+                model: model,
+                language: config.language,
+                onProgress: onMicProgress
             )
+        }
+        cloudTask = task
+
+        defer {
+            progress = nil
+            micProgress = nil
+            sysProgress = nil
+            micSnapshot = nil
+            sysSnapshot = nil
+            cloudBackendName = nil
+            cloudTask = nil
         }
 
-        let appSegments = segments.map { seg in
-            LabeledSegment(
-                start: seg.start,
-                end: seg.end,
-                speaker: seg.speaker,
-                text: seg.text
-            )
+        let appSegments = try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
         }
+
+        liveSegments = appSegments.map(Self.toLiveSegment)
         return TranscriptFormatter.formatDual(appSegments)
+    }
+
+    /// Map a Core segment to the App-layer labelled segment used by the
+    /// transcript formatter.
+    private static func toLabeledSegment(_ seg: TranscribeerCore.LabeledSegment) -> LabeledSegment {
+        LabeledSegment(start: seg.start, end: seg.end, speaker: seg.speaker, text: seg.text)
+    }
+
+    /// Map a labelled segment to the live-preview type rendered in the UI.
+    private static func toLiveSegment(_ seg: LabeledSegment) -> TranscriptSegment {
+        TranscriptSegment(start: seg.start, end: seg.end, text: seg.text, speaker: seg.speaker)
+    }
+
+    private func applyMicProgress(_ value: Double) {
+        guard micProgress != value else { return }
+        micProgress = value
+        updateCombinedProgress()
+    }
+
+    private func applySysProgress(_ value: Double) {
+        guard sysProgress != value else { return }
+        sysProgress = value
+        updateCombinedProgress()
+    }
+
+    /// Snapshot-aware variants used by the cloud path. Store the snapshot
+    /// (drives `transcriptionPhase`) and pipe the fraction into the
+    /// existing per-source progress state so the bar keeps working.
+    private func applyMicSnapshot(_ snapshot: CloudProgressTracker.Snapshot) {
+        micSnapshot = snapshot
+        applyMicProgress(snapshot.fraction)
+    }
+
+    private func applySysSnapshot(_ snapshot: CloudProgressTracker.Snapshot) {
+        sysSnapshot = snapshot
+        applySysProgress(snapshot.fraction)
     }
 
     private func updateCombinedProgress() {
@@ -363,6 +520,7 @@ final class TranscriptionService {
     func cancel() {
         activeTask?.cancel()
         dualTask?.cancel()
+        cloudTask?.cancel()
     }
 
     /// Unload the current model and free memory.
@@ -377,6 +535,9 @@ final class TranscriptionService {
         progress = nil
         micProgress = nil
         sysProgress = nil
+        micSnapshot = nil
+        sysSnapshot = nil
+        cloudBackendName = nil
         liveSegments = []
     }
 }
@@ -409,11 +570,24 @@ private final class ProgressSink: @unchecked Sendable {
 
 enum TranscriptionError: LocalizedError {
     case modelNotLoaded
+    case missingAPIKey(backend: String, envVar: String)
+    case httpError(backend: String, status: Int, body: String)
+    case invalidResponse(backend: String, detail: String)
+    case network(backend: String, detail: String)
 
     var errorDescription: String? {
         switch self {
         case .modelNotLoaded:
             return "Whisper model is not loaded."
+        case let .missingAPIKey(backend, envVar):
+            let envHint = envVar.isEmpty ? "" : " or set $\(envVar)"
+            return "\(backend) API key missing — add it in Settings → Transcription\(envHint)."
+        case let .httpError(backend, status, body):
+            return "\(backend) transcription failed (HTTP \(status)): \(body)"
+        case let .invalidResponse(backend, detail):
+            return "\(backend) returned an unexpected response: \(detail)"
+        case let .network(backend, detail):
+            return "\(backend) network error: \(detail)"
         }
     }
 }
