@@ -5,8 +5,9 @@ import SwiftUI
 ///
 /// Left pane is the profile list with add / remove controls; right pane is a
 /// live-highlighted markdown editor. Changes auto-save after a debounce so
-/// the user never has to hunt for a "save" button. The built-in `default`
-/// profile maps to `SummarizationService.defaultPrompt` and is read-only.
+/// the user never has to hunt for a "save" button. The `default` profile is
+/// editable — saving writes an override file; the minus button reverts to the
+/// built-in prompt instead of deleting the entry from the list.
 struct PromptsSettingsView: View {
     @State private var profiles: [String] = []
     @State private var selection: String = PromptProfileManager.defaultName
@@ -16,6 +17,7 @@ struct PromptsSettingsView: View {
     @State private var errorMessage: String?
     @State private var showDeleteConfirm = false
     @State private var showNewSheet = false
+    @State private var defaultHasOverride = false
 
     var body: some View {
         HSplitView {
@@ -83,27 +85,58 @@ struct PromptsSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(!canDeleteSelection)
-            .accessibilityLabel("Delete selected profile")
-            .help("Delete selected profile")
+            .accessibilityLabel(deleteAccessibilityLabel)
+            .help(deleteHelp)
 
             Spacer()
         }
         .padding(4)
         .background(.bar)
         .confirmationDialog(
-            "Delete \"\(selection)\"?",
+            deleteDialogTitle,
             isPresented: $showDeleteConfirm,
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) { deleteSelection() }
+            Button(deleteButtonLabel, role: .destructive) { deleteSelection() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes ~/.transcribeer/prompts/\(selection).md.")
+            Text(deleteDialogMessage)
         }
     }
 
+    private var isDefaultSelected: Bool {
+        selection == PromptProfileManager.defaultName
+    }
+
+    /// The minus button is enabled for any non-default profile that exists,
+    /// and for `default` only when the user has saved an override (otherwise
+    /// there's nothing to revert).
     private var canDeleteSelection: Bool {
-        selection != PromptProfileManager.defaultName && profiles.contains(selection)
+        if isDefaultSelected { return defaultHasOverride }
+        return profiles.contains(selection)
+    }
+
+    private var deleteHelp: String {
+        isDefaultSelected ? "Revert default to built-in prompt" : "Delete selected profile"
+    }
+
+    private var deleteAccessibilityLabel: String {
+        isDefaultSelected ? "Revert default profile to built-in prompt" : "Delete selected profile"
+    }
+
+    private var deleteDialogTitle: String {
+        isDefaultSelected ? "Revert default to built-in prompt?" : "Delete \"\(selection)\"?"
+    }
+
+    private var deleteDialogMessage: String {
+        if isDefaultSelected {
+            return "This removes your edits and restores the prompt that ships with the app."
+        }
+        return "This removes ~/.transcribeer/prompts/\(selection).md."
+    }
+
+    private var deleteButtonLabel: String {
+        isDefaultSelected ? "Revert" : "Delete"
     }
 
     // MARK: - Editor
@@ -122,10 +155,11 @@ struct PromptsSettingsView: View {
                 }
                 .background(Color(nsColor: .textBackgroundColor))
 
-            if selection == PromptProfileManager.defaultName {
+            if isDefaultSelected, !defaultHasOverride {
                 Divider()
-                Text("The default prompt is built into the app and can't be edited. " +
-                     "Create a new profile to customise it.")
+                Text("Editing the default prompt creates an override stored at " +
+                     "~/.transcribeer/prompts/default.md. Use the minus button to " +
+                     "revert to the built-in prompt.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(8)
@@ -138,11 +172,9 @@ struct PromptsSettingsView: View {
             Text(selection)
                 .font(.headline)
             Spacer()
-            if selection != PromptProfileManager.defaultName {
-                Text("Saved automatically")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Saved automatically")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -154,8 +186,7 @@ struct PromptsSettingsView: View {
             get: { content },
             set: { newValue in
                 content = newValue
-                guard selection == loadedFor,
-                      selection != PromptProfileManager.defaultName else { return }
+                guard selection == loadedFor else { return }
                 scheduleSave(name: selection, content: newValue)
             }
         )
@@ -176,6 +207,7 @@ struct PromptsSettingsView: View {
     /// was just created.
     private func reload(select: String? = nil) {
         profiles = PromptProfileManager.listProfiles()
+        defaultHasOverride = PromptProfileManager.hasDefaultOverride()
         if let target = select, profiles.contains(target) {
             selection = target
         } else if !profiles.contains(selection) {
@@ -186,9 +218,13 @@ struct PromptsSettingsView: View {
 
     private func loadContent(for name: String) {
         saveTask?.cancel()
-        content = name == PromptProfileManager.defaultName
-            ? SummarizationService.defaultPrompt
-            : PromptProfileManager.readContent(name: name) ?? ""
+        if let onDisk = PromptProfileManager.readContent(name: name) {
+            content = onDisk
+        } else if name == PromptProfileManager.defaultName {
+            content = SummarizationService.defaultPrompt
+        } else {
+            content = ""
+        }
         loadedFor = name
     }
 
@@ -210,7 +246,12 @@ struct PromptsSettingsView: View {
         let name = selection
         do {
             try PromptProfileManager.delete(name: name)
-            selection = PromptProfileManager.defaultName
+            // For non-default profiles the row goes away — fall back to the
+            // default. For default we just reverted the override; keep it
+            // selected so the user sees the built-in prompt reload.
+            if name != PromptProfileManager.defaultName {
+                selection = PromptProfileManager.defaultName
+            }
             reload()
         } catch {
             errorMessage = error.localizedDescription

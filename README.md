@@ -15,7 +15,7 @@ Transcribeer captures both sides of any call, transcribes with speaker labels, a
 
 ## Features
 
-- **System audio capture** — records both microphone and speaker audio via Apple ScreenCaptureKit
+- **Dual-source audio capture** — records microphone and system audio separately via Core Audio process tap + AVAudioEngine, then mixes to a single timeline
 - **On-device transcription** — [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML, Apple Silicon optimized), Hebrew and multilingual
 - **Speaker diarization** — who said what, via [SpeakerKit](https://github.com/argmaxinc/WhisperKit) (Pyannote, on-device)
 - **LLM summarization** — Ollama (local), OpenAI, Anthropic, or Gemini (via Google Cloud ADC)
@@ -29,12 +29,12 @@ Transcribeer captures both sides of any call, transcribes with speaker labels, a
 
 | Layer | Technology |
 |-------|-----------|
-| Audio capture | [Apple ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) (Swift) |
+| Audio capture | Core Audio process tap + AVAudioEngine (Swift) |
 | Transcription | [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML, on-device) |
 | Diarization | [SpeakerKit](https://github.com/argmaxinc/WhisperKit) (Pyannote, on-device) |
 | Summarization | [Ollama](https://ollama.ai) (local), [OpenAI](https://openai.com), [Anthropic](https://anthropic.com), [Gemini](https://cloud.google.com/vertex-ai) |
 | GUI | Native SwiftUI menubar app |
-| CLI | Swift + [ArgumentParser](https://github.com/apple/swift-argument-parser) |
+| CLI | Swift + [ArgumentParser](https://github.com/apple/swift-argument-parser) (legacy, not built by default) |
 | Credentials | macOS Keychain (API keys stored securely per-service) |
 
 ## Requirements
@@ -56,7 +56,7 @@ brew install transcribeer
 ```bash
 git clone https://github.com/moshebe/transcribeer.git
 cd transcribeer
-make dev        # builds capture-bin + GUI, registers as a launch agent
+make dev        # builds GUI, registers as a launch agent
 ```
 
 ## Running Permanently (auto-start on login)
@@ -73,6 +73,8 @@ brew services stop transcribeer
 
 ## First Run
 
+On first launch macOS will prompt for **Microphone** and **System Audio Recording** permissions. Both are required to capture both sides of a call. System Audio Recording can be enabled in **System Settings → Privacy & Security → System Audio Recording**.
+
 On first transcription, WhisperKit and SpeakerKit models (~1.5 GB total) are downloaded automatically to `~/.transcribeer/models/`. This is a one-time download.
 
 ## GUI
@@ -84,25 +86,13 @@ make logs       # stream live logs
 
 Click the menubar icon to start/stop recording. The full pipeline (record → transcribe → summarize) runs automatically based on your `pipeline.mode` config.
 
-## CLI
-
-```bash
-transcribeer run                       # record → transcribe → summarize
-transcribeer run --duration 300        # auto-stop after 5 min
-transcribeer run --lang he             # force Hebrew transcription
-transcribeer run --no-diarize          # skip speaker labels
-transcribeer run --no-summarize        # transcript only
-transcribeer run --profile standup     # use a custom summary profile
-
-transcribeer record                    # record until Ctrl+C
-transcribeer record --duration 60      # record 60 seconds
-
-transcribeer transcribe audio.wav      # transcribe an existing file
-transcribeer transcribe audio.wav --lang he --out transcript.txt
-
-transcribeer summarize transcript.txt  # summarize a transcript
-transcribeer summarize transcript.txt --backend openai --profile meeting
-```
+Each session is stored as a folder under `~/.transcribeer/sessions/` containing:
+- `audio.mic.caf` — microphone recording (mono, original sample rate)
+- `audio.sys.caf` — system audio recording (mono, original sample rate)
+- `timing.json` — per-stream start timestamps for timeline alignment
+- `audio.m4a` — mixed output (AAC, 48 kHz, 128 kbps)
+- `transcript.txt` — full transcript with speaker labels
+- `summary.md` — LLM-generated summary
 
 ## Configuration
 
@@ -127,7 +117,14 @@ prompt_on_stop = true
 
 [paths]
 sessions_dir = "~/.transcribeer/sessions"
-capture_bin = "~/.transcribeer/bin/capture-bin"
+
+[audio]
+input_device_uid = ""                  # empty = system default microphone
+output_device_uid = ""                 # empty = system default output
+aec = true                             # echo cancellation
+self_label = "You"
+other_label = "Them"
+diarize_mic_multiuser = false          # run speaker diarization on mic track
 ```
 
 ### API Keys
@@ -172,13 +169,11 @@ Each imported note includes:
 ## Building from Source
 
 ```bash
-make capture        # build capture-bin → ~/.transcribeer/bin/
 make gui-build      # build Swift GUI binary
 make build-dev      # assemble .app bundle
 make gui            # build + launch
-make dev            # full dev install (capture + GUI + launch agent)
+make dev            # full dev install (GUI + launch agent)
 make obsidian-plugin OBSIDIAN_VAULT=~/path/to/vault
-make e2e-hebrew     # run Hebrew loopback e2e test (requires ANTHROPIC_API_KEY)
 ```
 
 ## Recording Consent

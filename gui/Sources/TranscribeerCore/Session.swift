@@ -169,12 +169,13 @@ public enum SessionManager {
     public static func audioDuration(_ dir: URL) -> String {
         let path = dir.appendingPathComponent("audio.m4a")
         guard FileManager.default.fileExists(atPath: path.path) else { return "—" }
-        let asset = AVURLAsset(url: path)
-        // Use synchronous CMTime property; the async `load(.duration)` API
-        // cannot be used here as this function is non-async.
-        let duration = asset.duration  // swiftlint:disable:this legacy_objc_type
-        guard duration.isValid, !duration.isIndefinite else { return "—" }
-        let seconds = Int(duration.seconds)
+        // Use AVAudioFile for a synchronous, non-deprecated duration read.
+        // The async `AVURLAsset.load(.duration)` API cannot be used here as
+        // this function is non-async.
+        guard let file = try? AVAudioFile(forReading: path) else { return "—" }
+        let sampleRate = file.processingFormat.sampleRate
+        guard sampleRate > 0 else { return "—" }
+        let seconds = Int(Double(file.length) / sampleRate)
         let m = seconds / 60
         let s = seconds % 60
         return String(format: "%d:%02d", m, s)

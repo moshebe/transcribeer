@@ -7,6 +7,7 @@ private let logger = Logger(subsystem: "com.transcribeer", category: "delegate")
 /// Handles app lifecycle events and notification delegation.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var onRecord: (() -> Void)?
+    var onCancelAutoRecord: (() -> Void)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("applicationDidFinishLaunching")
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         logger.info("startup complete")
     }
 
+    @MainActor
     private func configureAppIcon() {
         guard let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns") else {
             logger.error("AppIcon.icns missing from bundle resources")
@@ -27,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         NSApp.applicationIconImage = icon
+        DockTileBadger.register(baseIcon: icon)
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -36,12 +39,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        defer { completionHandler() }
         let id = response.actionIdentifier
-        if id == NotificationManager.recordAction
-            || id == UNNotificationDefaultActionIdentifier {
-            onRecord?()
+        let notificationID = response.notification.request.identifier
+
+        if id == NotificationManager.cancelAutoRecordAction {
+            onCancelAutoRecord?()
+            return
         }
-        completionHandler()
+
+        let isRecordIntent = id == NotificationManager.recordAction
+            || id == UNNotificationDefaultActionIdentifier
+        // Tapping the body of the countdown notification shouldn't trigger a
+        // generic "record" action — recording is already queued.
+        guard isRecordIntent,
+              notificationID != NotificationManager.meetingCountdownIdentifier
+        else { return }
+        onRecord?()
     }
 
     func userNotificationCenter(
