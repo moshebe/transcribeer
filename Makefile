@@ -25,6 +25,13 @@ APP_RESOURCES = $(APP_CONTENTS)/Resources
 # whole cp/codesign/agent-restart dance when nothing actually changed.
 # Lives outside the bundle so codesign --deep doesn't trip on a foreign file.
 APP_STAMP    = $(PROJECT_DIR)/gui/.build/.build-dev.stamp
+# Backup of the unsigned release binary as it was when last bundled. We compare
+# the freshly-built release binary against this — not against the bundle binary,
+# which codesign rewrites in place — to decide whether a rebuild is needed.
+# Lives outside the bundle for the same reason as APP_STAMP: codesign --deep
+# would otherwise treat it as a nested executable and bail with
+# errSecInternalComponent.
+APP_UNSIGNED_BACKUP = $(PROJECT_DIR)/gui/.build/TranscribeerApp.unsigned
 
 # Side-by-side dev variant: distinct bundle id so it can run alongside a
 # normally-installed Transcribeer without conflicting over the menu bar slot
@@ -276,15 +283,18 @@ gui-build:
 	cd gui && swift build -c release -q
 	@echo "✓ gui binary: gui/.build/release/TranscribeerApp"
 
-# build-dev is incremental: a no-op `swift build` paired with an up-to-date
-# stamp file (mtime ≥ source files + entitlements + logo) skips the whole
-# cp + icon + codesign dance. The previous cmp-against-bundle-binary check
-# was a no-op because codesign rewrites the bundle binary in place, so the
-# unsigned release binary and the signed bundle binary never matched.
+# build-dev is incremental: a no-op `swift build` paired with an unsigned
+# release binary that matches APP_UNSIGNED_BACKUP byte-for-byte skips the
+# whole cp + icon + codesign dance. We compare against APP_UNSIGNED_BACKUP
+# rather than the in-bundle binary because codesign rewrites the latter in
+# place, so the unsigned release output and the signed bundle copy would
+# never match. Earlier versions kept that backup inside Contents/MacOS/,
+# which triggered codesign --deep → errSecInternalComponent on the foreign
+# Mach-O sibling; it now lives next to APP_STAMP, outside the bundle.
 build-dev: gui-build
 	@if [ -f $(APP_STAMP) ] && [ -d $(APP_BUNDLE) ] \
-		&& [ ! gui/.build/release/TranscribeerApp -nt $(APP_STAMP) ] \
-		&& [ ! gui/Info.plist -nt $(APP_STAMP) ] \
+		&& cmp -s gui/.build/release/TranscribeerApp $(APP_UNSIGNED_BACKUP) \
+		&& cmp -s gui/Info.plist $(APP_CONTENTS)/Info.plist \
 		&& [ ! $(APP_ENTITLEMENTS) -nt $(APP_STAMP) ] \
 		&& { [ ! -f assets/logo.png ] || [ ! assets/logo.png -nt $(APP_STAMP) ]; }; then \
 		echo "✓ app bundle up to date: $(APP_BUNDLE)"; \
@@ -292,16 +302,16 @@ build-dev: gui-build
 	fi; \
 	set -e; \
 	mkdir -p $(APP_MACOS) $(APP_RESOURCES); \
-	rm -f $(APP_MACOS)/capture-bin; \
+	rm -f $(APP_MACOS)/capture-bin $(APP_MACOS)/TranscribeerApp.unsigned; \
 	: "Atomic replace: copy to a sibling then rename(2). The running app's"; \
 	: "mmap keeps the old inode alive (unaffected) while the new file gets"; \
 	: "a fresh inode. In-place cp would mutate the live inode's pages and"; \
 	: "the kernel would kill the running process with CODESIGNING / Invalid"; \
 	: "Page on the next cold code-page fault."; \
-	if ! cmp -s gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.unsigned 2>/dev/null; then \
+	if ! cmp -s gui/.build/release/TranscribeerApp $(APP_UNSIGNED_BACKUP) 2>/dev/null; then \
 		cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.new; \
 		mv -f $(APP_MACOS)/TranscribeerApp.new $(APP_MACOS)/TranscribeerApp; \
-		cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.unsigned; \
+		cp gui/.build/release/TranscribeerApp $(APP_UNSIGNED_BACKUP); \
 	fi; \
 	cmp -s gui/Info.plist $(APP_CONTENTS)/Info.plist || \
 		cp gui/Info.plist $(APP_CONTENTS)/Info.plist; \
