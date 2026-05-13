@@ -55,12 +55,14 @@ public enum AudioValidation {
             return false
         }
 
-        var peak: Float = 0
         let frames = Int(buffer.frameLength)
-        for ch in 0..<Int(buffer.format.channelCount) {
+        let channelCount = Int(buffer.format.channelCount)
+        var peak: Float = 0
+        for ch in 0..<channelCount {
             let samples = channels[ch]
-            for i in 0..<frames where abs(samples[i]) > peak {
-                peak = abs(samples[i])
+            for i in 0..<frames {
+                let value = abs(samples[i])
+                if value > peak { peak = value }
             }
         }
         return peak >= peakThreshold
@@ -99,7 +101,7 @@ public enum AudioValidationError: LocalizedError {
                 Recording appears silent (no audible signal in first \(seconds) seconds \
                 of \(url.lastPathComponent)). Common causes:
                   • System-audio capture with nothing playing through speakers.
-                  • 'Screen & System Audio Recording' permission revoked mid-session.
+                  • System Audio Recording permission revoked mid-session.
                   • Microphone input muted or wrong device selected.
                 Play the file in a media player to confirm, then re-record.
                 """

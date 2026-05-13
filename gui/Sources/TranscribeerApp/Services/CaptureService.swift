@@ -1,93 +1,185 @@
 import AVFoundation
 import CaptureCore
 import Foundation
+import os
 
-/// Thin façade over `AudioCapture` + `AudioFileWriter` for the GUI pipeline.
+private let logger = Logger(subsystem: "com.transcribeer", category: "CaptureService")
+
+/// Thin façade over `DualAudioRecorder` + `AudioMixer` for the GUI pipeline.
 enum CaptureService {
     enum Result {
         case recorded
         case noAudio
-        case permissionDenied(String)  // human-readable which-permission message
+        case permissionDenied(String)
         case error(String)
     }
 
-    /// Record system audio (and optionally mic) to `url` until `stop()` is
-    /// called (or `duration` seconds elapse).
-    static func record(to url: URL, duration: Double?) async -> Result {
-        let writer = AudioFileWriter.shared
+    private static let lock = NSLock()
+    private static var stopContinuation: CheckedContinuation<Void, Never>?
+    /// Set by `stop()` so an early click doesn't get lost between
+    /// `recorder.start()` returning and the wait-for-stop task actually
+    /// installing the continuation. Reset at the start of every `record()`.
+    private static var stopRequested = false
+
+    // MARK: - Private helpers
+
+    private static func resolveMicDevice(uid: String) -> AudioDeviceID? {
+        resolveDevice(uid: uid, kind: "Microphone", lookup: MicCapture.inputDeviceID(forUID:))
+    }
+
+    private static func resolveOutputDevice(uid: String) -> AudioDeviceID? {
+        resolveDevice(uid: uid, kind: "Output device", lookup: SystemAudioCapture.outputDeviceID(forUID:))
+    }
+
+    private static func resolveDevice(
+        uid: String,
+        kind: String,
+        lookup: (String) -> AudioDeviceID?
+    ) -> AudioDeviceID? {
+        guard !uid.isEmpty else { return nil }
+        if let id = lookup(uid) { return id }
+        let message = "\(kind) '\(uid)' not found. Falling back to system default."
+        logger.warning("\(message, privacy: .public)")
+        NotificationManager.notifyError(message)
+        return nil
+    }
+
+    private static let micDeniedMessage =
+        "Microphone access denied. Enable Microphone in System Settings > Privacy & Security."
+
+    private static func preflightMic() async -> Result? {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined:
+            let granted = await AVCaptureDevice.requestAccess(for: .audio)
+            return granted ? nil : .permissionDenied(micDeniedMessage)
+        case .denied, .restricted:
+            return .permissionDenied(micDeniedMessage)
+        case .authorized:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    /// Record to `sessionDir` (creates `audio.mic.caf`, `audio.sys.caf`,
+    /// `timing.json`, and mixed `audio.m4a`).
+    static func record(
+        to sessionDir: URL,
+        duration: Double?,
+        audio: AppConfig.AudioSettings
+    ) async -> Result {
+        if let result = await preflightMic() { return result }
+
+        lock.withLock {
+            stopRequested = false
+            stopContinuation = nil
+        }
+
+        let recorder = DualAudioRecorder(sessionDir: sessionDir)
+        recorder.inputDeviceID = resolveMicDevice(uid: audio.inputDeviceUID)
+        recorder.outputDeviceID = resolveOutputDevice(uid: audio.outputDeviceUID)
+        recorder.echoCancellation = audio.aec
+
         do {
-            try writer.open(url: url)
+            try await recorder.start()
+        } catch let error as SystemAudioCapture.CaptureError {
+            return .permissionDenied(error.localizedDescription)
         } catch {
-            return .error("Cannot open output file: \(error.localizedDescription)")
+            return .error(error.localizedDescription)
         }
 
-        // Explicitly request mic permission upfront if we intend to capture mic.
-        // Without this, SCStream may fail with an opaque -3801 even though
-        // Screen Recording IS granted, because the mic grant dialog never
-        // gets triggered in the SCStream path.
-        if AudioCapture.shared.captureMicrophone {
-            let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-            switch micStatus {
-            case .notDetermined:
-                let granted = await AVCaptureDevice.requestAccess(for: .audio)
-                if !granted {
-                    writer.close()
-                    return .permissionDenied(
-                        "Microphone access was denied. Grant it in " +
-                        "System Settings → Privacy & Security → Microphone.",
-                    )
+        let stopTask = Task {
+            if let duration {
+                // Poll the stop flag so a user click can end a fixed-duration
+                // recording early. 100 ms granularity keeps the overhead low
+                // and the latency imperceptible.
+                let pollNanos: UInt64 = 100_000_000
+                let totalNanos = UInt64(duration * 1_000_000_000)
+                var elapsed: UInt64 = 0
+                while elapsed < totalNanos {
+                    if lock.withLock({ stopRequested }) { return }
+                    try? await Task.sleep(nanoseconds: pollNanos)
+                    elapsed += pollNanos
                 }
-            case .denied, .restricted:
-                writer.close()
-                return .permissionDenied(
-                    "Microphone access is denied or restricted. Enable it in " +
-                    "System Settings → Privacy & Security → Microphone.",
-                )
-            case .authorized:
-                break
-            @unknown default:
-                break
+            } else {
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    // Resume immediately if stop() was already called before
+                    // we got here; otherwise install the continuation.
+                    let alreadyStopped = lock.withLock { () -> Bool in
+                        if stopRequested { return true }
+                        stopContinuation = cont
+                        return false
+                    }
+                    if alreadyStopped { cont.resume() }
+                }
             }
         }
+
+        await stopTask.value
+        let timing = await recorder.stop()
 
         do {
-            try await AudioCapture.shared.start(writer: writer)
+            try timing.write(to: sessionDir.appendingPathComponent("timing.json"))
         } catch {
-            writer.close()
-            let ns = error as NSError
-            let detail = "SCKit \(ns.domain)/\(ns.code): \(ns.localizedDescription)"
-            let message = ns.localizedDescription.lowercased()
-            // Error -3801 is the generic "not authorized" code; the
-            // description usually hints at which underlying service failed
-            // ("screen recording", "microphone", "tcc authorization denied",
-            // etc.). Pass the detail through so the user can actually tell
-            // what they need to grant.
-            if ns.code == -3801 || message.contains("not authorized") || message.contains("authorization") {
-                return .permissionDenied(detail)
-            }
-            return .error(detail)
+            return .error("Failed to write timing: \(error.localizedDescription)")
         }
 
-        if let duration {
-            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
-            AudioCapture.shared.stop()
-        } else {
-            // Wait until stop() is called externally (stream delegate fires onStreamStopped).
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                AudioCapture.shared.onStreamStopped = {
-                    continuation.resume()
-                }
-            }
+        let mixedURL = sessionDir.appendingPathComponent("audio.m4a")
+        let mixer = AudioMixer()
+        do {
+            try mixer.mix(
+                micURL: sessionDir.appendingPathComponent("audio.mic.caf"),
+                sysURL: sessionDir.appendingPathComponent("audio.sys.caf"),
+                timing: timing,
+                outputURL: mixedURL
+            )
+        } catch {
+            return .error("Mix failed: \(error.localizedDescription)")
         }
 
-        writer.close()
-
-        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
+        let size = (
+            try? FileManager.default.attributesOfItem(atPath: mixedURL.path)[.size]
+                as? UInt64
+        ) ?? 0
         return size > 0 ? .recorded : .noAudio
+    }
+
+    /// Human-readable snapshot of the devices the pipeline will use, for the
+    /// session run log. Always includes the current system defaults so a later
+    /// reader can tell whether "system default" in config meant what they expect.
+    static func describeDevices(audio: AppConfig.AudioSettings) -> [String] {
+        let inputs = AudioDevices.availableInputDevices()
+        let outputs = AudioDevices.availableOutputDevices()
+        return [
+            "audio.input=\(selected(uid: audio.inputDeviceUID, in: inputs))"
+                + " default=\(name(of: AudioDevices.defaultInputDeviceID(), in: inputs))",
+            "audio.output=\(selected(uid: audio.outputDeviceUID, in: outputs))"
+                + " default=\(name(of: AudioDevices.defaultOutputDeviceID(), in: outputs))",
+            "audio.aec=\(audio.aec)",
+        ]
+    }
+
+    private typealias DeviceInfo = (id: AudioDeviceID, name: String, uid: String)
+
+    private static func selected(uid: String, in devices: [DeviceInfo]) -> String {
+        guard !uid.isEmpty else { return "<system default>" }
+        if let match = devices.first(where: { $0.uid == uid }) {
+            return "\(match.name) [uid=\(uid)]"
+        }
+        return "<not found, falling back to system default> [uid=\(uid)]"
+    }
+
+    private static func name(of deviceID: AudioDeviceID?, in devices: [DeviceInfo]) -> String {
+        guard let deviceID else { return "unknown" }
+        return devices.first(where: { $0.id == deviceID })?.name ?? "unknown"
     }
 
     /// Signal the active recording to stop.
     static func stop() {
-        AudioCapture.shared.stop()
+        lock.withLock {
+            stopRequested = true
+            stopContinuation?.resume()
+            stopContinuation = nil
+        }
     }
 }

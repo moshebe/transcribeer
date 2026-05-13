@@ -22,6 +22,11 @@ struct TranscriptView: View {
     /// text is arriving. Used during live transcription.
     let isStreaming: Bool
 
+    /// The label used for the "other" participant (system audio). Rendered
+    /// with a fixed distinct color so it doesn't collide with the hash-based
+    /// palette used for diarized speakers.
+    let otherLabel: String?
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -31,6 +36,7 @@ struct TranscriptView: View {
                             line: line,
                             isActive: isActive(line),
                             onSeek: onSeek,
+                            otherLabel: otherLabel
                         )
                         .id(line.id)
                     }
@@ -74,10 +80,14 @@ private struct TranscriptRow: View {
     let line: TranscriptLine
     let isActive: Bool
     let onSeek: (Double) -> Void
+    let otherLabel: String?
 
-    private var isRTL: Bool { TextDirection.isRightToLeft(line.text) }
+    private var isRTL: Bool { TextDirection.containsRightToLeft(line.text) }
     private var direction: LayoutDirection { isRTL ? .rightToLeft : .leftToRight }
-    private var textAlignment: TextAlignment { isRTL ? .trailing : .leading }
+    // Always `.leading` — the `\.layoutDirection` env on the Text already
+    // flips leading→right for RTL. Using `.trailing` under an RTL env would
+    // align wrapped lines to the left edge (wrong for Hebrew/Arabic).
+    private var textAlignment: TextAlignment { .leading }
     private var frameAlignment: Alignment { isRTL ? .trailing : .leading }
     private var activeEdge: Alignment { isRTL ? .trailing : .leading }
 
@@ -135,58 +145,70 @@ private struct TranscriptRow: View {
 
     private func formatTimestamp(_ seconds: Double) -> String {
         let total = Int(seconds)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 {
-            return String(format: "%d:%02d:%02d", h, m, s)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
         }
-        return String(format: "%d:%02d", m, s)
+        return String(format: "%d:%02d", minutes, secs)
     }
 
     /// Stable speaker → color mapping. `Speaker 1`, `Speaker 2`, ... get
-    /// distinct accents; `???` (unknown) stays muted.
+    /// distinct accents; `???` (unknown) stays muted; the configured
+    /// `otherLabel` (e.g. "Them") gets a fixed distinct color.
+    ///
+    /// Uses a deterministic djb2 hash over unicode scalars rather than
+    /// `String.hashValue` — Swift seeds its hasher per process, so
+    /// `hashValue` produces different numbers each launch and would flip
+    /// speaker colors between app runs.
     private func speakerColor(for speaker: String) -> Color {
         guard speaker != "???" else { return .secondary }
+        if let otherLabel, speaker == otherLabel {
+            return .red
+        }
         let palette: [Color] = [.blue, .purple, .teal, .orange, .pink, .indigo, .green]
-        let hash = abs(speaker.hashValue)
-        return palette[hash % palette.count]
+        return palette[Self.stableHash(speaker) % palette.count]
+    }
+
+    /// djb2: deterministic across launches. UInt so arithmetic wraps cleanly
+    /// without overflow.
+    private static func stableHash(_ string: String) -> Int {
+        var hash: UInt = 5381
+        for scalar in string.unicodeScalars {
+            hash = hash &* 33 &+ UInt(scalar.value)
+        }
+        return Int(hash & UInt(Int.max))
     }
 }
 
 // MARK: - Text direction
 
-/// Right-to-left script detection for transcript rendering.
+/// Right-to-left script detection for transcript and summary rendering.
 ///
-/// WhisperKit emits transcripts with native scripts (Hebrew, Arabic, etc.)
+/// WhisperKit / LLMs emit text with native scripts (Hebrew, Arabic, etc.)
 /// but no directionality metadata. SwiftUI's `Text` renders individual
-/// glyphs correctly, but paragraph alignment and line wrapping only flip
-/// when the surrounding `layoutDirection` is RTL — otherwise a Hebrew
-/// sentence reads as if glued together backwards.
+/// glyphs correctly, but paragraph alignment, list markers and line
+/// wrapping only flip when the surrounding `layoutDirection` is RTL —
+/// otherwise a Hebrew sentence reads as if glued together backwards.
+///
+/// Policy: any single strong RTL character in the input flips the whole
+/// block to RTL. Mixed content (Hebrew prose with embedded English
+/// product names, code identifiers, etc.) is the common case and should
+/// always render RTL; pure-Latin text stays LTR.
 enum TextDirection {
-    /// Detect whether a string is predominantly right-to-left by looking at
-    /// Unicode strong-directional characters. Covers Hebrew, Arabic, Syriac,
-    /// N'Ko, Thaana and friends — all of `U+0590…U+08FF` plus Arabic
-    /// presentation forms.
-    ///
-    /// Uses a majority vote so mixed content (e.g. English product names
-    /// inside a Hebrew sentence) still flips when the RTL script dominates.
-    static func isRightToLeft(_ text: String) -> Bool {
-        var rtl = 0
-        var ltr = 0
+    /// Returns `true` if `text` contains any Unicode strong right-to-left
+    /// character. Covers Hebrew, Arabic, Syriac, Thaana, N'Ko, Samaritan,
+    /// Mandaic — all of `U+0590…U+08FF` — plus Arabic presentation forms.
+    static func containsRightToLeft(_ text: String) -> Bool {
         for scalar in text.unicodeScalars {
             let value = scalar.value
-            // Hebrew, Arabic, Syriac, Thaana, N'Ko, Samaritan, Mandaic, etc.
             if (0x0590...0x08FF).contains(value)
                 || (0xFB1D...0xFDFF).contains(value)
                 || (0xFE70...0xFEFF).contains(value) {
-                rtl += 1
-            } else if (0x0041...0x007A).contains(value)
-                || (0x00C0...0x024F).contains(value)
-                || (0x0370...0x052F).contains(value) {
-                ltr += 1
+                return true
             }
         }
-        return rtl > ltr
+        return false
     }
 }

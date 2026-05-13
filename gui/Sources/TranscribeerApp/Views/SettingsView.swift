@@ -3,15 +3,23 @@ import SwiftUI
 struct SettingsView: View {
     @Binding var config: AppConfig
     @State private var apiKey: String = ""
-    @State private var modelCatalog = ModelCatalogService()
+    @State private var transcriptionAPIKey: String = ""
 
     var body: some View {
         TabView {
             Tab("Pipeline", systemImage: "bolt") {
                 pipelineTab
             }
+            Tab("Audio", systemImage: "speaker.wave.2") {
+                AudioSettingsView(config: $config)
+            }
             Tab("Transcription", systemImage: "waveform") {
-                transcriptionTab
+                TranscriptionSettingsView(
+                    config: $config,
+                    apiKey: $transcriptionAPIKey,
+                    save: save,
+                    reloadAPIKey: reloadTranscriptionKey
+                )
             }
             Tab("Summarization", systemImage: "text.badge.checkmark") {
                 summarizationTab
@@ -23,7 +31,15 @@ struct SettingsView: View {
         .frame(width: 640, height: 460)
         .onAppear {
             apiKey = KeychainHelper.getAPIKey(backend: config.llmBackend) ?? ""
+            reloadTranscriptionKey()
         }
+    }
+
+    private func reloadTranscriptionKey() {
+        let backend = TranscriptionBackend.from(config.transcriptionBackend)
+        transcriptionAPIKey = backend.usesAPIKey
+            ? (KeychainHelper.getAPIKey(backend: backend.keychainKey) ?? "")
+            : ""
     }
 
     // MARK: - Pipeline
@@ -52,132 +68,94 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("Auto-record Zoom meetings", isOn: Binding(
-                    get: { config.zoomAutoRecord },
-                    set: { config.zoomAutoRecord = $0; save() }
+                Toggle("Auto-record meetings", isOn: Binding(
+                    get: { config.meetingAutoRecord },
+                    set: { config.meetingAutoRecord = $0; save() }
                 ))
+                Stepper(
+                    value: Binding(
+                        get: { config.meetingAutoRecordDelay },
+                        set: { config.meetingAutoRecordDelay = max(0, $0); save() }
+                    ),
+                    in: 0...60
+                ) {
+                    HStack {
+                        Text("Countdown before recording")
+                        Spacer()
+                        Text("\(config.meetingAutoRecordDelay)s")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                .disabled(!config.meetingAutoRecord)
             } header: {
-                Text("Zoom Integration")
+                Text("Meeting Integration")
             } footer: {
-                Text("Start/stop recording automatically when a Zoom meeting starts/ends.")
+                Text("Start/stop recording automatically when a meeting starts/ends. "
+                    + "Detected from microphone + camera activity paired with a known meeting app. "
+                    + "A notification with a cancel button appears during the countdown.")
                     .foregroundStyle(.secondary)
             }
-        }
-        .formStyle(.grouped)
-        .padding(.top, 8)
-    }
 
-    // MARK: - Transcription
-
-    private var transcriptionTab: some View {
-        Form {
             Section {
-                modelPicker
-                TextField("Custom model repo (optional)", text: Binding(
-                    get: { config.whisperModelRepo },
-                    set: { config.whisperModelRepo = $0 }
-                ))
-                .onSubmit { save() }
-            } header: {
-                HStack {
-                    Text("Whisper model")
-                    Spacer()
-                    if modelCatalog.isLoading {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button {
-                            Task { await modelCatalog.refresh() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
+                ForEach(MeetingDetector.defaultMeetingApps, id: \.bundleID) { app in
+                    Toggle(app.displayName, isOn: Binding(
+                        get: { config.meetingAutoRecordApps.contains(app.bundleID) },
+                        set: { enabled in
+                            if enabled {
+                                config.meetingAutoRecordApps.insert(app.bundleID)
+                            } else {
+                                config.meetingAutoRecordApps.remove(app.bundleID)
+                            }
+                            save()
                         }
-                        .buttonStyle(.borderless)
-                        .help("Refresh model list")
-                    }
-                }
-            } footer: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Models are downloaded on first use (~0.1–1.5 GB). Stored in ~/.transcribeer/models/.")
-                    Text("Custom repo: HuggingFace repo for ivrit-ai or other fine-tuned models")
-                    Text("(e.g. owner/ivrit-ai-whisper-large-v3-turbo-coreml).")
-                    if let message = modelCatalog.lastError {
-                        Text(message).foregroundStyle(.orange)
-                    }
-                }
-                .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Picker("Language", selection: Binding(
-                    get: { TranscriptionLanguage.from(config.language) },
-                    set: { config.language = $0.rawValue; save() },
-                )) {
-                    ForEach(TranscriptionLanguage.allCases) { option in
-                        Text(option.displayName).tag(option)
-                    }
+                    ))
+                    .disabled(!config.meetingAutoRecord)
                 }
             } header: {
-                Text("Language")
+                Text("Auto-Record Apps")
             } footer: {
-                Text(languageFooterText)
+                Text("Only the selected apps trigger auto-record when a meeting is detected. "
+                    + "Unchecked apps still post a notification so you can start recording manually.")
                     .foregroundStyle(.secondary)
             }
 
+            ScheduledTranscriptionSection(config: $config, save: save)
+
             Section {
-                Picker("Speaker detection", selection: Binding(
-                    get: { config.diarization },
-                    set: { config.diarization = $0; save() },
-                )) {
-                    Text("pyannote").tag("pyannote")
-                    Text("none").tag("none")
+                Toggle("Enrich Zoom meetings", isOn: Binding(
+                    get: { config.zoomEnricherEnabled },
+                    set: { config.zoomEnricherEnabled = $0; save() },
+                ))
+                Stepper(
+                    value: Binding(
+                        get: { config.maxMeetingParticipants },
+                        set: { config.maxMeetingParticipants = max(0, $0); save() },
+                    ),
+                    in: 0...200,
+                ) {
+                    HStack {
+                        Text("Skip when more than")
+                        Spacer()
+                        Text("\(config.maxMeetingParticipants) participants")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
                 }
+                .disabled(!config.zoomEnricherEnabled)
             } header: {
-                Text("Diarization")
+                Text("Zoom Enricher")
             } footer: {
-                Text(config.diarization == "none"
-                     ? "Disabled — transcript will have a single unlabelled speaker."
-                     : "Detects and labels multiple speakers in the transcript.")
+                Text("Reads the meeting topic and participant list from the Zoom app via "
+                    + "the macOS Accessibility API while a recording is in progress. "
+                    + "Participant names are only captured while you have Zoom's participants "
+                    + "side panel open. Large meetings above the threshold are skipped to keep "
+                    + "the session metadata focused on speakers.")
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .padding(.top, 8)
-        .task {
-            // Make sure whatever the user has selected is visible in the list,
-            // then refresh from the network. If refresh fails the pre-seeded
-            // entry keeps the UI usable.
-            modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.whisperModel))
-            await modelCatalog.refresh()
-            modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.whisperModel))
-        }
-    }
-
-    private var languageFooterText: String {
-        if config.language == "auto" {
-            return "Auto-detect runs a language-ID pass before transcription. "
-                + "Explicit selection is faster and more reliable — recommended "
-                + "if you only record in one or two languages."
-        }
-        let name = TranscriptionLanguage.from(config.language).displayName
-        return "Whisper will transcribe as \(name). Override per-session from the transcript tab."
-    }
-
-    @ViewBuilder
-    private var modelPicker: some View {
-        let selected = AppConfig.canonicalWhisperModel(config.whisperModel)
-        Picker("Model", selection: Binding(
-            get: { selected },
-            set: { config.whisperModel = $0; save() }
-        )) {
-            if modelCatalog.entries.isEmpty {
-                Text(selected).tag(selected)
-            } else {
-                ForEach(modelCatalog.entries) { entry in
-                    ModelPickerRow(entry: entry).tag(entry.id)
-                }
-            }
-        }
-        .pickerStyle(.menu)
-        .disabled(modelCatalog.entries.isEmpty)
     }
 
     // MARK: - Summarization
@@ -256,43 +234,6 @@ struct SettingsView: View {
     }
 }
 
-/// One row in the Whisper model picker, rendering name + status badges.
-///
-/// Kept as its own view so the `Picker` can render it both as the collapsed
-/// label and inside the menu without duplicating layout.
-private struct ModelPickerRow: View {
-    let entry: WhisperModelEntry
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(entry.displayName)
-            if entry.isRecommendedDefault {
-                Text("default").modifier(BadgeStyle(tint: .accentColor))
-            }
-            if entry.isDownloaded {
-                Text("downloaded").modifier(BadgeStyle(tint: .green))
-            }
-            if entry.isDisabled {
-                Text("unsupported").modifier(BadgeStyle(tint: .secondary))
-            }
-        }
-    }
-}
-
-private struct BadgeStyle: ViewModifier {
-    let tint: Color
-    var font: Font = .caption2
-
-    func body(content: Content) -> some View {
-        content
-            .font(font)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(tint.opacity(0.18), in: Capsule())
-            .foregroundStyle(tint)
-    }
-}
-
 /// Live reachability check for the configured Ollama host.
 ///
 /// Probes `GET <host>/api/version` whenever the host string changes (debounced
@@ -312,10 +253,10 @@ private struct OllamaHostStatus: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            StatusIcon(kind: iconKind, accessibilityLabel: iconAccessibilityLabel)
+            SettingsStatusIcon(kind: iconKind, accessibilityLabel: iconAccessibilityLabel)
             Text(title).font(.caption)
             if let badge {
-                Text(badge).modifier(BadgeStyle(tint: badgeTint, font: .caption.monospaced()))
+                Text(badge).modifier(SettingsBadgeStyle(tint: badgeTint, font: .caption.monospaced()))
             }
             Spacer()
         }
@@ -324,7 +265,7 @@ private struct OllamaHostStatus: View {
         .task(id: host) { await runProbe() }
     }
 
-    private var iconKind: StatusIcon.Kind {
+    private var iconKind: SettingsStatusIcon.Kind {
         switch probe {
         case .checking: .loading
         case .reachable: .ok
@@ -416,32 +357,6 @@ private struct OllamaHostStatus: View {
     }
 }
 
-/// Shared status icon used by every Summarization-tab status row. Centralizing
-/// the icon/colour mapping keeps the three status views visually consistent
-/// and ensures every icon carries an explicit accessibility label.
-private struct StatusIcon: View {
-    enum Kind { case loading, ok, warning, error }
-
-    let kind: Kind
-    let accessibilityLabel: String
-
-    var body: some View {
-        Group {
-            switch kind {
-            case .loading:
-                ProgressView().controlSize(.mini)
-            case .ok:
-                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
-            case .warning:
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            case .error:
-                Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
-            }
-        }
-        .accessibilityLabel(accessibilityLabel)
-    }
-}
-
 /// Status pill under the API key field showing whether the key is sourced
 /// from the Keychain or from the shell environment.
 ///
@@ -461,7 +376,7 @@ private struct APIKeyStatus: View {
                     .font(.caption)
                 if envPresent {
                     Text("$\(envVarName)")
-                        .modifier(BadgeStyle(tint: .green, font: .caption.monospaced()))
+                        .modifier(SettingsBadgeStyle(tint: .green, font: .caption.monospaced()))
                         .help("Detected in your login shell environment")
                 }
                 Spacer()
@@ -472,14 +387,14 @@ private struct APIKeyStatus: View {
     }
 
     private func icon(keychainPresent: Bool, envValuePresent: Bool) -> some View {
-        let kind: StatusIcon.Kind
+        let kind: SettingsStatusIcon.Kind
         let label: String
         switch (keychainPresent, envValuePresent) {
         case (true, _):      kind = .ok;      label = "API key stored in Keychain"
         case (false, true):  kind = .ok;      label = "API key from environment"
         case (false, false): kind = .warning; label = "API key missing"
         }
-        return StatusIcon(kind: kind, accessibilityLabel: label)
+        return SettingsStatusIcon(kind: kind, accessibilityLabel: label)
     }
 
     private func title(keychainPresent: Bool, envValuePresent: Bool) -> String {
@@ -515,7 +430,7 @@ private struct GCloudAuthStatus: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            StatusIcon(kind: iconKind, accessibilityLabel: headline)
+            SettingsStatusIcon(kind: iconKind, accessibilityLabel: headline)
             Text(headline).font(.caption).bold()
             Spacer()
             refreshButton
@@ -567,7 +482,7 @@ private struct GCloudAuthStatus: View {
         .disabled(refreshing)
     }
 
-    private var iconKind: StatusIcon.Kind {
+    private var iconKind: SettingsStatusIcon.Kind {
         guard let status else { return .loading }
         return status.isReady ? .ok : .warning
     }
@@ -581,7 +496,7 @@ private struct GCloudAuthStatus: View {
     private func row(label: String, value: String, ok: Bool) -> some View {
         HStack(spacing: 6) {
             Text(label).foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
-            Text(value).modifier(BadgeStyle(tint: ok ? .green : .orange, font: .caption.monospaced()))
+            Text(value).modifier(SettingsBadgeStyle(tint: ok ? .green : .orange, font: .caption.monospaced()))
             Spacer()
         }
         .accessibilityElement(children: .combine)

@@ -26,11 +26,12 @@ struct PromptProfileTests {
         }
     }
 
-    @Test("Rejects reserved name 'default'")
-    func rejectsDefaultName() {
-        #expect(throws: PromptProfileManager.ProfileError.self) {
-            try PromptProfileManager.save(name: "default", content: "x")
-        }
+    @Test("New-profile validation flags 'default' as reserved")
+    func validationFlagsDefaultName() {
+        // The new-profile sheet uses validationError to gate the Create button,
+        // so 'default' must still be rejected there even though save() now
+        // accepts it (to persist an override of the built-in prompt).
+        #expect(PromptProfileManager.validationError(for: "default") != nil)
     }
 
     @Test("Rejects empty / whitespace name")
