@@ -20,11 +20,11 @@
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
-    <key>NSUserNotificationsUsageDescription</key>
-    <string>Alerts when transcription is complete.</string>
-    <key>NSScreenCaptureUsageDescription</key>
-    <string>Transcribeer records system audio to transcribe meetings and calls.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Transcribeer records your voice alongside system audio so your side of a call or meeting is included in the transcript.</string>
+    <key>NSSystemAudioRecordingUsageDescription</key>
+    <string>Transcribeer records audio from apps playing through your speakers so your meetings can be transcribed.</string>
+    <key>NSUserNotificationsUsageDescription</key>
+    <string>Alerts when transcription is complete.</string>
 </dict>
 </plist>

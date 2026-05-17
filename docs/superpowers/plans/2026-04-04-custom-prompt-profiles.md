@@ -416,7 +416,6 @@ _DEFAULTS = {
     },
     "paths": {
         "sessions_dir": "~/.transcribeer/sessions",
-        "capture_bin": "~/.transcribeer/bin/capture-bin",
     },
     "pipeline": {
         "mode": "record+transcribe+summarize",

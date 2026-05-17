@@ -15,10 +15,14 @@
 included:
   - gui/Sources
   - gui/Tests
+  - capture/Sources
+  - capture/Tests
 
 excluded:
   - gui/.build
   - gui/.swiftpm
+  - capture/.build
+  - capture/.swiftpm
   - "**/Package.swift"
   - "**/*.generated.swift"
 

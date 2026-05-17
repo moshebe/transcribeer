@@ -48,29 +48,53 @@ public enum TranscriptFormatter {
 
         var speakerMap: [String: String] = [:]
         var counter = 1
-        for seg in segments where seg.speaker != "UNKNOWN" {
-            if speakerMap[seg.speaker] == nil {
-                speakerMap[seg.speaker] = "Speaker \(counter)"
-                counter += 1
-            }
+        for seg in segments where seg.speaker != "UNKNOWN" && speakerMap[seg.speaker] == nil {
+            speakerMap[seg.speaker] = "Speaker \(counter)"
+            counter += 1
         }
         speakerMap["UNKNOWN"] = "???"
 
+        let renamed = segments.map { seg in
+            LabeledSegment(
+                start: seg.start,
+                end: seg.end,
+                speaker: speakerMap[seg.speaker] ?? seg.speaker,
+                text: seg.text
+            )
+        }
+        return render(mergeConsecutive(renamed))
+    }
+
+    /// Format labeled segments for dual-source output: use speaker labels
+    /// directly (no renumbering), merge consecutive same-speaker lines.
+    public static func formatDual(_ segments: [LabeledSegment]) -> String {
+        guard !segments.isEmpty else { return "" }
+        return render(mergeConsecutive(segments))
+    }
+
+    /// Merge consecutive segments with the same speaker; `end` and `text` are
+    /// accumulated, `start` and `speaker` come from the first segment in the run.
+    private static func mergeConsecutive(_ segments: [LabeledSegment]) -> [LabeledSegment] {
         var merged: [LabeledSegment] = []
         for seg in segments {
-            let friendly = speakerMap[seg.speaker] ?? seg.speaker
-            if let last = merged.last, last.speaker == friendly {
+            if let last = merged.last, last.speaker == seg.speaker {
                 let prev = merged.removeLast()
-                let merged_text = prev.text + " " + seg.text
-                merged.append(LabeledSegment(start: prev.start, end: seg.end, speaker: friendly, text: merged_text))
+                merged.append(LabeledSegment(
+                    start: prev.start,
+                    end: seg.end,
+                    speaker: prev.speaker,
+                    text: prev.text + " " + seg.text
+                ))
             } else {
-                merged.append(LabeledSegment(start: seg.start, end: seg.end, speaker: friendly, text: seg.text))
+                merged.append(seg)
             }
         }
+        return merged
+    }
 
-        return merged.map { seg in
-            let ts = "[\(formatTimestamp(seg.start)) -> \(formatTimestamp(seg.end))]"
-            return "\(ts) \(seg.speaker): \(seg.text)"
+    private static func render(_ segments: [LabeledSegment]) -> String {
+        segments.map { seg in
+            "[\(formatTimestamp(seg.start)) -> \(formatTimestamp(seg.end))] \(seg.speaker): \(seg.text)"
         }.joined(separator: "\n")
     }
 

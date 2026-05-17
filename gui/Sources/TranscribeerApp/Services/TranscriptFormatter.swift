@@ -56,43 +56,25 @@ enum TranscriptFormatter {
     static func format(_ segments: [LabeledSegment]) -> String {
         guard !segments.isEmpty else { return "" }
 
-        // Build stable speaker name mapping (first-seen order)
+        // Build stable speaker name mapping (first-seen order).
         var speakerMap: [String: String] = [:]
         var counter = 1
-        for seg in segments where seg.speaker != "UNKNOWN" {
-            if speakerMap[seg.speaker] == nil {
-                speakerMap[seg.speaker] = "Speaker \(counter)"
-                counter += 1
-            }
+        for seg in segments
+            where seg.speaker != "UNKNOWN" && speakerMap[seg.speaker] == nil {
+            speakerMap[seg.speaker] = "Speaker \(counter)"
+            counter += 1
         }
         speakerMap["UNKNOWN"] = "???"
 
-        // Merge consecutive same-speaker segments
-        var merged: [MergedLine] = []
-        for seg in segments {
-            let friendly = speakerMap[seg.speaker] ?? seg.speaker
-            if let last = merged.last, last.speaker == friendly {
-                let prev = merged.removeLast()
-                merged.append(MergedLine(
-                    start: prev.start,
-                    end: seg.end,
-                    speaker: friendly,
-                    text: prev.text + " " + seg.text
-                ))
-            } else {
-                merged.append(MergedLine(
-                    start: seg.start,
-                    end: seg.end,
-                    speaker: friendly,
-                    text: seg.text
-                ))
-            }
+        let renamed = segments.map { seg in
+            MergedLine(
+                start: seg.start,
+                end: seg.end,
+                speaker: speakerMap[seg.speaker] ?? seg.speaker,
+                text: seg.text
+            )
         }
-
-        return merged.map { seg in
-            let ts = "[\(formatTimestamp(seg.start)) -> \(formatTimestamp(seg.end))]"
-            return "\(ts) \(seg.speaker): \(sanitize(seg.text))"
-        }.joined(separator: "\n")
+        return render(mergeConsecutive(renamed))
     }
 
     /// Strip Whisper special tokens (e.g. `<|startoftranscript|>`, `<|he|>`,
@@ -177,6 +159,42 @@ enum TranscriptFormatter {
         var end: Double
         var speaker: String
         var text: String
+    }
+
+    /// Format labeled segments for dual-source output: use speaker labels
+    /// directly (no renumbering), merge consecutive same-speaker lines.
+    static func formatDual(_ segments: [LabeledSegment]) -> String {
+        guard !segments.isEmpty else { return "" }
+        let lines = segments.map { seg in
+            MergedLine(start: seg.start, end: seg.end, speaker: seg.speaker, text: seg.text)
+        }
+        return render(mergeConsecutive(lines))
+    }
+
+    /// Merge consecutive lines with the same speaker.
+    private static func mergeConsecutive(_ lines: [MergedLine]) -> [MergedLine] {
+        var merged: [MergedLine] = []
+        for line in lines {
+            if let last = merged.last, last.speaker == line.speaker {
+                let prev = merged.removeLast()
+                merged.append(MergedLine(
+                    start: prev.start,
+                    end: line.end,
+                    speaker: prev.speaker,
+                    text: prev.text + " " + line.text
+                ))
+            } else {
+                merged.append(line)
+            }
+        }
+        return merged
+    }
+
+    private static func render(_ lines: [MergedLine]) -> String {
+        lines.map { line in
+            let ts = "[\(formatTimestamp(line.start)) -> \(formatTimestamp(line.end))]"
+            return "\(ts) \(line.speaker): \(sanitize(line.text))"
+        }.joined(separator: "\n")
     }
 
     /// Formats seconds as MM:SS.

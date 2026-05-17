@@ -26,26 +26,11 @@ uv pip install -e ".[gui,resemblyzer,dev]"
 uv run pytest tests/ -q
 ```
 
-## Building the Swift Capture Binary
-
-The pre-compiled `capture-bin` in the repo is built for arm64. To rebuild:
-
-```bash
-cd capture
-swift build -c release
-cp .build/release/capture ../capture-bin
-# Re-sign with entitlements
-codesign --force --sign - --entitlements capture.entitlements.plist ../capture-bin
-```
-
 ## Running the App
 
 ```bash
 # Menubar GUI
 uv run transcribeer-gui
-
-# CLI
-uv run transcribeer --help
 ```
 
 ## Linting Swift

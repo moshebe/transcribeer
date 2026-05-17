@@ -5,7 +5,7 @@ Repo-specific conventions. These layer on top of global defaults; when they conf
 ## Layout
 
 - `gui/` — SwiftUI menubar app (SPM, `TranscribeerApp` target). **Primary code surface.**
-- `capture/` — Swift ScreenCaptureKit audio recorder, built into `capture-bin`
+- `capture/` — Core Audio process tap + AVAudioEngine audio recorder (CaptureCore library)
 - `tests/e2e/` — Python end-to-end tests (pytest)
 - `obsidian-plugin/` — TS plugin (esbuild, vanilla `main.ts`)
 - `docs/`, `assets/`, `test-samples/` — supporting material
@@ -17,6 +17,7 @@ Config/state: `~/.transcribeer/` (config.toml, prompts/, models/, sessions/, bin
 - macOS 15+, Apple Silicon only
 - Swift 6 (tools-version 6.0), `swiftLanguageMode(.v5)` for `gui` target
 - SPM dependencies: `TOMLDecoder`, `WhisperKit`, `SpeakerKit`, `LLM`, `HighlightedTextEditor`
+- Audio capture: Core Audio process tap (`AudioHardwareCreateProcessTap`) + AVAudioEngine, **not** ScreenCaptureKit/SCStream
 - API keys: macOS Keychain via `KeychainHelper` — **never** config file, **never** env var in code paths intended for UI storage
 
 ## Swift conventions
@@ -85,8 +86,7 @@ Log errors with `.localizedDescription`, not the full `error` object.
 - Pure-logic tests only in gui — no UI automation, no network
 
 E2E:
-- `cd tests/e2e && uv run pytest` (requires `capture-bin` built, API keys for LLM tests)
-- `make e2e-hebrew` for the Hebrew loopback scenario
+- `cd tests/e2e && uv run pytest` (requires API keys for LLM tests)
 
 ## Build & verify
 
@@ -106,7 +106,7 @@ make gui               # build + launch
 
 ## Workflow
 
-- **Never edit `capture-bin`** by hand — rebuild from `capture/` (`make capture`)
+
 - After Swift changes touching `gui/`: `swift build` + `make lint` before reporting done
 - Keep SwiftUI state changes minimal — don't convert `@State` ↔ `@StateObject` ↔ `@Observable` without reason
 - When adding a new pipeline stage, extend `AppState` enum + update exhaustive switches (compiler will list them)
@@ -121,6 +121,7 @@ make gui               # build + launch
 - Don't log raw API keys, transcripts, or session contents — use path references
 - Don't reach across layers: `Views/` calls `Services/`, `Services/` own I/O. Models are passive.
 - Don't force-unwrap to silence optionals — swiftlint will fail the build
+- Don't reintroduce `SCStream` / ScreenCaptureKit for audio capture — the capture layer uses Core Audio process taps exclusively
 
 ## Commit / PR
 

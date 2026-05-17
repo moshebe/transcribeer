@@ -3,11 +3,18 @@ import Foundation
 /// Manages prompt profiles from ~/.transcribeer/prompts/.
 ///
 /// A "profile" is a markdown file whose contents become the system prompt for
-/// the summarizer. `default` is a synthetic profile — it maps to the built-in
-/// prompt in `SummarizationService.defaultPrompt` and cannot be edited or
-/// deleted from disk.
+/// the summarizer. `default` is always present in the list. If the user hasn't
+/// customised it, it falls back to the built-in `SummarizationService.defaultPrompt`;
+/// once customised, the override is persisted as `default.md` and used in its
+/// place. `default` cannot be renamed or deleted (deleting just reverts to the
+/// built-in).
 enum PromptProfileManager {
     static let defaultName = "default"
+
+    /// Posted whenever the on-disk profile list changes (create / rename /
+    /// delete). Lets long-lived views like the history window refresh their
+    /// cached profile dropdown without polling.
+    static let didChangeNotification = Notification.Name("PromptProfileManagerDidChange")
 
     // MARK: - Paths
 
@@ -40,20 +47,24 @@ enum PromptProfileManager {
 
     // MARK: - Read / Write / Delete
 
-    /// Read the prompt text for a profile. Returns nil for `default` (caller
-    /// should fall back to `SummarizationService.defaultPrompt`).
+    /// Read the prompt text for a profile. Returns nil when the profile has
+    /// no on-disk override — for `default` the caller should fall back to
+    /// `SummarizationService.defaultPrompt`; for other profiles a missing file
+    /// means the profile doesn't exist.
     static func readContent(name: String) -> String? {
-        guard name != defaultName else { return nil }
-        return try? String(contentsOf: fileURL(for: name), encoding: .utf8)
+        try? String(contentsOf: fileURL(for: name), encoding: .utf8)
     }
 
     /// Create or update a profile. Throws on invalid name / IO errors.
+    /// Editing `default` is allowed and writes `default.md` as an override of
+    /// the built-in prompt.
     static func save(name: String, content: String) throws {
-        let trimmed = try validateName(name)
+        let trimmed = try validateName(name, allowDefault: true)
         try FileManager.default.createDirectory(
             at: promptsDir, withIntermediateDirectories: true
         )
         try content.write(to: fileURL(for: trimmed), atomically: true, encoding: .utf8)
+        notifyChanged()
     }
 
     /// Rename a profile on disk. Default cannot be renamed.
@@ -66,12 +77,28 @@ enum PromptProfileManager {
             throw ProfileError.alreadyExists(trimmed)
         }
         try FileManager.default.moveItem(at: fileURL(for: oldName), to: dst)
+        notifyChanged()
     }
 
-    /// Delete a profile on disk. Default is a no-op (not a file).
+    /// Delete a profile's on-disk file. For `default` this clears the user's
+    /// override so the built-in prompt is used again; the profile entry stays
+    /// in the list. For other profiles the file is removed entirely.
     static func delete(name: String) throws {
-        guard name != defaultName else { return }
-        try FileManager.default.removeItem(at: fileURL(for: name))
+        let url = fileURL(for: name)
+        if name == defaultName, !FileManager.default.fileExists(atPath: url.path) {
+            return
+        }
+        try FileManager.default.removeItem(at: url)
+        notifyChanged()
+    }
+
+    /// True when `default` has a user-saved override on disk.
+    static func hasDefaultOverride() -> Bool {
+        FileManager.default.fileExists(atPath: fileURL(for: defaultName).path)
+    }
+
+    private static func notifyChanged() {
+        NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 
     // MARK: - Validation
@@ -92,10 +119,14 @@ enum PromptProfileManager {
     }
 
     /// Trim and validate a profile name, throwing `ProfileError` on failure.
-    private static func validateName(_ name: String) throws -> String {
+    /// Pass `allowDefault: true` when persisting an override of the built-in
+    /// default prompt (the only context where `default` is a legal target).
+    private static func validateName(_ name: String, allowDefault: Bool = false) throws -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw ProfileError.invalidName("empty") }
-        guard trimmed != defaultName else { throw ProfileError.invalidName("reserved") }
+        if !allowDefault, trimmed == defaultName {
+            throw ProfileError.invalidName("reserved")
+        }
         guard trimmed.rangeOfCharacter(from: invalidNameChars) == nil else {
             throw ProfileError.invalidName("disallowed characters")
         }
