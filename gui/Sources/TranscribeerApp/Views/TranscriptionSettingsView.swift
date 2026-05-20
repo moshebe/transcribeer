@@ -15,6 +15,7 @@ struct TranscriptionSettingsView: View {
     var reloadAPIKey: () -> Void
 
     @State private var modelCatalog = ModelCatalogService()
+    @State private var saveTask: Task<Void, Never>?
 
     private var backend: TranscriptionBackend {
         TranscriptionBackend.from(config.transcriptionBackend)
@@ -35,6 +36,7 @@ struct TranscriptionSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, 8)
+        .onDisappear { saveTask?.cancel() }
         .task {
             // Make sure whatever the user has selected is visible in the
             // picker, then refresh from the network. If refresh fails the
@@ -83,9 +85,9 @@ struct TranscriptionSettingsView: View {
             modelPicker
             TextField("Custom model repo (optional)", text: Binding(
                 get: { config.whisperModelRepo },
-                set: { config.whisperModelRepo = $0 },
+                set: { config.whisperModelRepo = $0; scheduleSave() },
             ))
-            .onSubmit { save() }
+            .onSubmit { saveTask?.cancel(); save() }
         } header: {
             whisperHeader
         } footer: {
@@ -148,15 +150,16 @@ struct TranscriptionSettingsView: View {
     private var cloudSection: some View {
         Section {
             TextField("Model", text: cloudModelBinding)
-                .onSubmit { save() }
+                .onSubmit { saveTask?.cancel(); save() }
             SecureField("API key", text: $apiKey)
                 .onSubmit {
                     guard !apiKey.isEmpty else { return }
+                    saveTask?.cancel()
                     saveAPIKey(apiKey)
                 }
                 .onChange(of: apiKey) { _, newValue in
                     guard !newValue.isEmpty else { return }
-                    saveAPIKey(newValue)
+                    scheduleAPIKeySave(newValue)
                 }
             TranscriptionAPIKeyStatus(backend: backend, keychainKey: apiKey)
         } header: {
@@ -180,6 +183,7 @@ struct TranscriptionSettingsView: View {
                 } else {
                     config.geminiTranscriptionModel = newValue
                 }
+                scheduleSave()
             },
         )
     }
@@ -245,6 +249,26 @@ struct TranscriptionSettingsView: View {
                  ? "Disabled — transcript will have a single unlabelled speaker."
                  : "Detects and labels multiple speakers in the transcript.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Debounced save
+
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { save() }
+        }
+    }
+
+    private func scheduleAPIKeySave(_ key: String) {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { saveAPIKey(key) }
         }
     }
 }

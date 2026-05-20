@@ -46,6 +46,7 @@ struct SessionDetailView: View {
     @State private var summaryModelOptions: [SummaryModelOption] = []
     @State private var selectedLanguage: TranscriptionLanguage = .auto
     @State private var notesSaveTask: Task<Void, Never>?
+    @State private var nameSaveTask: Task<Void, Never>?
     @State private var progressStartedAt: Date?
     @State private var etaEstimator = ETAEstimator()
     @State private var showDeleteConfirm = false
@@ -131,7 +132,7 @@ struct SessionDetailView: View {
         // `.task(id:)` runs on first appear *and* whenever the host changes,
         // so there's no need for a separate plain `.task`.
         .task(id: config.ollamaHost) { await refreshSummaryModels() }
-        .onChange(of: session.id) { _, _ in syncFields() }
+        .onChange(of: session.id) { _, _ in flushRename(); syncFields() }
         // Work around the state-sync race where this view is rendered with a
         // new `session` but the parent's `detail` state hasn't caught up yet
         // (parent updates `detail` in its own `.onChange`, which runs after
@@ -139,7 +140,13 @@ struct SessionDetailView: View {
         // local editable fields — but only if the user hasn't started typing
         // (local value still matches the previous `detail.*`).
         .onChange(of: detail.name) { oldValue, newValue in
-            if name == oldValue { name = newValue }
+            // Sync model → local state only when the user hasn't made an unsaved
+            // edit (i.e. local still matches the previous detail value). This
+            // prevents the parent's late update from overwriting an in-flight edit.
+            if name == oldValue {
+                nameSaveTask?.cancel()
+                name = newValue
+            }
         }
         .onChange(of: detail.notes) { oldValue, newValue in
             if notes == oldValue { notes = newValue }
@@ -192,6 +199,27 @@ struct SessionDetailView: View {
         selectedLanguage = detail.language.map(TranscriptionLanguage.from) ?? .auto
     }
 
+    // MARK: - Debounced rename
+
+    private func scheduleRename(_ newName: String) {
+        // Ignore model-driven updates (detail.name sync) — only save user edits.
+        guard newName != detail.name else { return }
+        nameSaveTask?.cancel()
+        nameSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { onRename(newName) }
+        }
+    }
+
+    /// Immediately persist any pending rename before switching sessions.
+    private func flushRename() {
+        nameSaveTask?.cancel()
+        nameSaveTask = nil
+        guard name != detail.name else { return }
+        onRename(name)
+    }
+
     // MARK: - Header
 
     private var header: some View {
@@ -199,7 +227,13 @@ struct SessionDetailView: View {
             TextField("Session name", text: $name)
                 .textFieldStyle(.plain)
                 .font(.system(size: 20, weight: .semibold))
-                .onSubmit { onRename(name) }
+                .onSubmit {
+                    nameSaveTask?.cancel()
+                    onRename(name)
+                }
+                .onChange(of: name) { _, newValue in
+                    scheduleRename(newValue)
+                }
 
             Text(detail.date + (detail.duration.isEmpty ? "" : " · \(detail.duration)"))
                 .font(.system(size: 12))
