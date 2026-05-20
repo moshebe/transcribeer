@@ -18,6 +18,7 @@ struct SettingsView: View {
                     config: $config,
                     apiKey: $transcriptionAPIKey,
                     save: save,
+                    saveAPIKey: saveTranscriptionKey,
                     reloadAPIKey: reloadTranscriptionKey
                 )
             }
@@ -40,6 +41,12 @@ struct SettingsView: View {
         transcriptionAPIKey = backend.usesAPIKey
             ? (KeychainHelper.getAPIKey(backend: backend.keychainKey) ?? "")
             : ""
+    }
+
+    private func saveTranscriptionKey(_ key: String) {
+        let backend = TranscriptionBackend.from(config.transcriptionBackend)
+        guard backend.usesAPIKey else { return }
+        KeychainHelper.setAPIKey(backend: backend.keychainKey, key: key)
     }
 
     // MARK: - Pipeline
@@ -221,6 +228,10 @@ struct SettingsView: View {
                 .onSubmit {
                     guard !apiKey.isEmpty else { return }
                     KeychainHelper.setAPIKey(backend: backend.rawValue, key: apiKey)
+                }
+                .onChange(of: apiKey) { _, newValue in
+                    guard !newValue.isEmpty else { return }
+                    KeychainHelper.setAPIKey(backend: backend.rawValue, key: newValue)
                 }
             APIKeyStatus(backend: backend, keychainKey: apiKey)
 

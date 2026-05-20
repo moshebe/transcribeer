@@ -11,6 +11,7 @@ struct TranscriptionSettingsView: View {
     @Binding var config: AppConfig
     @Binding var apiKey: String
     var save: () -> Void
+    var saveAPIKey: (String) -> Void
     var reloadAPIKey: () -> Void
 
     @State private var modelCatalog = ModelCatalogService()
@@ -51,6 +52,10 @@ struct TranscriptionSettingsView: View {
             Picker("Backend", selection: Binding(
                 get: { backend },
                 set: { newBackend in
+                    // Persist any unsaved key for the current backend before switching.
+                    if !apiKey.isEmpty {
+                        saveAPIKey(apiKey)
+                    }
                     config.transcriptionBackend = newBackend.rawValue
                     save()
                     reloadAPIKey()
@@ -147,7 +152,11 @@ struct TranscriptionSettingsView: View {
             SecureField("API key", text: $apiKey)
                 .onSubmit {
                     guard !apiKey.isEmpty else { return }
-                    KeychainHelper.setAPIKey(backend: backend.keychainKey, key: apiKey)
+                    saveAPIKey(apiKey)
+                }
+                .onChange(of: apiKey) { _, newValue in
+                    guard !newValue.isEmpty else { return }
+                    saveAPIKey(newValue)
                 }
             TranscriptionAPIKeyStatus(backend: backend, keychainKey: apiKey)
         } header: {
