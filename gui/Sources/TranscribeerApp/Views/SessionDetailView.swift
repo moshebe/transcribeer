@@ -450,39 +450,17 @@ struct SessionDetailView: View {
 
     // MARK: - Status toast
 
-    @ViewBuilder
     private var statusToast: some View {
-        if !statusText.isEmpty {
-            HStack(spacing: 8) {
-                Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(isError ? .red : .green)
-                Text(statusText)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.primary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(.separator.opacity(0.3), lineWidth: 1),
-            )
-            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-            .padding(.bottom, 20)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
-    }
-
-    private var isError: Bool {
-        let lower = statusText.lowercased()
-        return lower.contains("failed") || lower.contains("error")
+        SessionStatusToast(statusText: $statusText)
     }
 
     private func scheduleStatusClear(for newValue: String) {
         statusClearTask?.cancel()
         guard !newValue.isEmpty, !newValue.hasSuffix("…") else { return }
+        let hasError = newValue.lowercased().contains("failed")
+            || newValue.lowercased().contains("error")
         statusClearTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(isError ? 6 : 3))
+            try? await Task.sleep(for: .seconds(hasError ? 6 : 3))
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.2)) { statusText = "" }
         }
@@ -516,5 +494,41 @@ struct SessionDetailView: View {
     private var showProgressRow: Bool {
         runner.transcriptionProgress != nil
             || runner.transcriptionService.modelState.isBusy
+    }
+}
+
+// MARK: - SessionStatusToast
+
+/// Floating pill shown at the bottom of the session detail view for
+/// transient status messages (export success, errors, etc.).
+/// Extracted to keep `SessionDetailView`'s body line count within limits.
+private struct SessionStatusToast: View {
+    @Binding var statusText: String
+
+    private var isError: Bool {
+        let lower = statusText.lowercased()
+        return lower.contains("failed") || lower.contains("error")
+    }
+
+    var body: some View {
+        if !statusText.isEmpty {
+            HStack(spacing: 8) {
+                Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(isError ? .red : .green)
+                Text(statusText)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(.separator.opacity(0.3), lineWidth: 1),
+            )
+            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            .padding(.bottom, 20)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
     }
 }
