@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let logger = Logger(subsystem: "com.transcribeer", category: "KeychainHelper")
 
 /// Keychain access via the `security` CLI — matches the Python implementation.
 enum KeychainHelper {
@@ -23,6 +26,7 @@ enum KeychainHelper {
             try proc.run()
             proc.waitUntilExit()
         } catch {
+            logger.error("getAPIKey: failed to launch security CLI: \(error.localizedDescription)")
             return nil
         }
 
@@ -33,7 +37,7 @@ enum KeychainHelper {
     }
 
     static func setAPIKey(backend: String, key: String) {
-        // Delete existing first
+        // Delete existing first (failure is expected when no entry exists yet).
         let del = Process()
         del.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         del.arguments = [
@@ -46,7 +50,7 @@ enum KeychainHelper {
         try? del.run()
         del.waitUntilExit()
 
-        // Add new
+        // Add new entry and verify it was written.
         let add = Process()
         add.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         add.arguments = [
@@ -57,7 +61,15 @@ enum KeychainHelper {
         ]
         add.standardOutput = FileHandle.nullDevice
         add.standardError = FileHandle.nullDevice
-        try? add.run()
-        add.waitUntilExit()
+        do {
+            try add.run()
+            add.waitUntilExit()
+        } catch {
+            logger.error("setAPIKey: failed to launch security CLI: \(error.localizedDescription)")
+            return
+        }
+        if add.terminationStatus != 0 {
+            logger.error("setAPIKey: security add-generic-password exited with status \(add.terminationStatus) for backend '\(backend)'")
+        }
     }
 }

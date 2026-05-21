@@ -4,6 +4,7 @@ struct SettingsView: View {
     @Binding var config: AppConfig
     @State private var apiKey: String = ""
     @State private var transcriptionAPIKey: String = ""
+    @State private var saveTask: Task<Void, Never>?
 
     var body: some View {
         TabView {
@@ -18,6 +19,7 @@ struct SettingsView: View {
                     config: $config,
                     apiKey: $transcriptionAPIKey,
                     save: save,
+                    saveAPIKey: saveTranscriptionKey,
                     reloadAPIKey: reloadTranscriptionKey
                 )
             }
@@ -33,6 +35,7 @@ struct SettingsView: View {
             apiKey = KeychainHelper.getAPIKey(backend: config.llmBackend) ?? ""
             reloadTranscriptionKey()
         }
+        .onDisappear { saveTask?.cancel() }
     }
 
     private func reloadTranscriptionKey() {
@@ -40,6 +43,12 @@ struct SettingsView: View {
         transcriptionAPIKey = backend.usesAPIKey
             ? (KeychainHelper.getAPIKey(backend: backend.keychainKey) ?? "")
             : ""
+    }
+
+    private func saveTranscriptionKey(_ key: String) {
+        let backend = TranscriptionBackend.from(config.transcriptionBackend)
+        guard backend.usesAPIKey else { return }
+        KeychainHelper.setAPIKey(backend: backend.keychainKey, key: key)
     }
 
     // MARK: - Pipeline
@@ -180,9 +189,9 @@ struct SettingsView: View {
 
                 TextField("Model", text: Binding(
                     get: { config.llmModel },
-                    set: { config.llmModel = $0 }
+                    set: { config.llmModel = $0; scheduleSave() }
                 ))
-                .onSubmit { save() }
+                .onSubmit { saveTask?.cancel(); save() }
 
                 authFields(for: backend)
             } header: {
@@ -211,16 +220,21 @@ struct SettingsView: View {
         case .localEndpoint:
             TextField("Ollama host", text: Binding(
                 get: { config.ollamaHost },
-                set: { config.ollamaHost = $0 }
+                set: { config.ollamaHost = $0; scheduleSave() }
             ))
-            .onSubmit { save() }
+            .onSubmit { saveTask?.cancel(); save() }
             OllamaHostStatus(host: config.ollamaHost)
 
         case .apiKey:
             SecureField("API key", text: $apiKey)
                 .onSubmit {
                     guard !apiKey.isEmpty else { return }
+                    saveTask?.cancel()
                     KeychainHelper.setAPIKey(backend: backend.rawValue, key: apiKey)
+                }
+                .onChange(of: apiKey) { _, newValue in
+                    guard !newValue.isEmpty else { return }
+                    scheduleKeychainSave(backend: backend.rawValue, key: newValue)
                 }
             APIKeyStatus(backend: backend, keychainKey: apiKey)
 
@@ -231,6 +245,24 @@ struct SettingsView: View {
 
     private func save() {
         ConfigManager.save(config)
+    }
+
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { save() }
+        }
+    }
+
+    private func scheduleKeychainSave(backend: String, key: String) {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { KeychainHelper.setAPIKey(backend: backend, key: key) }
+        }
     }
 }
 
