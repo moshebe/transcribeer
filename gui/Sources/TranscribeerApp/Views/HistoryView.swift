@@ -526,6 +526,16 @@ struct HistoryView: View {
                 onRename: { newName in
                     SessionManager.setName(session.path, newName)
                     refresh()
+                    // Keep `detail.name` in sync with what was just written to
+                    // disk. Without this, `detail.name` stays at the pre-edit
+                    // value for the entire editing session, causing
+                    // `scheduleRename`'s guard (`newName != detail.name`) to
+                    // always pass — producing redundant disk writes — and
+                    // making the stale value available for the session-switch
+                    // guard that was removed from `flushRename`.
+                    if selectedSessionID == session.id {
+                        loadDetail(sessionID: session.id)
+                    }
                 },
                 onSaveNotes: { newNotes in
                     SessionManager.setNotes(session.path, newNotes)
