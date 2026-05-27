@@ -132,7 +132,23 @@ struct SessionDetailView: View {
         // `.task(id:)` runs on first appear *and* whenever the host changes,
         // so there's no need for a separate plain `.task`.
         .task(id: config.ollamaHost) { await refreshSummaryModels() }
-        .onChange(of: session.id) { _, _ in flushRename(); syncFields() }
+        .onChange(of: session.id) { _, _ in
+            // Cancel any pending debounced rename — it would fire with the
+            // outgoing session's local `name` value but the `onRename` closure
+            // already captures the *incoming* session (closures are rebuilt by
+            // the parent on every render). Calling it would write the wrong
+            // name to the wrong session, which is the root cause of the
+            // sidebar/detail desync bug (commit 5a64318).
+            //
+            // The 400 ms debounce means any edit that the user committed
+            // (stopped typing for ≥ 400 ms) is already on disk before they
+            // could switch sessions. Sub-400 ms tail-edits are dropped on
+            // session switch — the same trade-off every debounced macOS text
+            // field makes.
+            nameSaveTask?.cancel()
+            nameSaveTask = nil
+            syncFields()
+        }
         // Work around the state-sync race where this view is rendered with a
         // new `session` but the parent's `detail` state hasn't caught up yet
         // (parent updates `detail` in its own `.onChange`, which runs after
@@ -210,14 +226,6 @@ struct SessionDetailView: View {
             guard !Task.isCancelled else { return }
             await MainActor.run { onRename(newName) }
         }
-    }
-
-    /// Immediately persist any pending rename before switching sessions.
-    private func flushRename() {
-        nameSaveTask?.cancel()
-        nameSaveTask = nil
-        guard name != detail.name else { return }
-        onRename(name)
     }
 
     // MARK: - Header
