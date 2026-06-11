@@ -139,6 +139,20 @@ extension AppConfig {
         default: name
         }
     }
+
+    /// Returns `true` when the repo string looks like a CTranslate2 /
+    /// faster-whisper model rather than a WhisperKit CoreML repo.
+    ///
+    /// WhisperKit requires CoreML (`.mlmodelc` / `.mlpackage`) bundles.
+    /// CTranslate2 repos (suffix `-ct2`, owner `ctranslate2`, or path segment
+    /// `faster-whisper`) cannot be loaded by WhisperKit and will always fail
+    /// with `modelsUnavailable`.
+    static func isCTranslate2Repo(_ repo: String) -> Bool {
+        let lower = repo.lowercased()
+        return lower.hasSuffix("-ct2")
+            || lower.contains("ctranslate2")
+            || lower.contains("faster-whisper")
+    }
 }
 
 enum ConfigManager {

@@ -67,6 +67,26 @@ struct AppConfigTests {
         #expect(AppConfig.canonicalWhisperModel("distil-whisper_distil-large-v3") == "distil-whisper_distil-large-v3")
     }
 
+    @Test(
+        "isCTranslate2Repo detects CTranslate2 / faster-whisper repos",
+        arguments: [
+            // True cases — should warn the user
+            (repo: "ivrit-ai/whisper-large-v3-turbo-ct2",          expected: true),
+            (repo: "someone/my-model-ct2",                          expected: true),
+            (repo: "ctranslate2/whisper-large-v3",                  expected: true),
+            (repo: "owner/faster-whisper-large-v3",                 expected: true),
+            (repo: "OWNER/MODEL-CT2",                               expected: true),  // case-insensitive
+            // False cases — legitimate CoreML / standard repos
+            (repo: "",                                              expected: false),
+            (repo: "argmaxinc/whisperkit-coreml",                   expected: false),
+            (repo: "owner/ivrit-ai-whisper-large-v3-turbo-coreml",  expected: false),
+            (repo: "openai/whisper",                                expected: false),
+        ]
+    )
+    func isCTranslate2Repo(repo: String, expected: Bool) {
+        #expect(AppConfig.isCTranslate2Repo(repo) == expected)
+    }
+
     @Test("Equatable conformance compares all fields")
     func equatable() {
         let a = AppConfig()
