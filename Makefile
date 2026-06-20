@@ -280,7 +280,7 @@ stop:
 
 # ── Swift native GUI ──────────────────────────────────────────────────────────
 gui-build:
-	cd gui && swift build -c release -q
+	cd gui && swift build -c release -q -Xswiftc -DDEV_BUILD
 	@echo "✓ gui binary: gui/.build/release/TranscribeerApp"
 
 # build-dev is incremental: a no-op `swift build` paired with an unsigned

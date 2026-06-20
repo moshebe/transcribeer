@@ -38,7 +38,7 @@ struct MenuBarIcon: View {
         // so the manually tinted mic body tracks light/dark changes.
         Image(nsImage: RecordingIndicatorRenderer.menuBarImage(
             state: displayState,
-            isDevBuild: Self.isDevBuild,
+            isDevBuild: AppBuild.isDevBuild,
         ))
         .id(appearanceTick)
         .task(id: ObjectIdentifier(runner)) {
@@ -52,8 +52,4 @@ struct MenuBarIcon: View {
         }
         .onReceive(themeChanges) { _ in appearanceTick &+= 1 }
     }
-
-    private static let isDevBuild: Bool = {
-        Bundle.main.bundleIdentifier?.hasSuffix(".dev") ?? false
-    }()
 }

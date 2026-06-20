@@ -4,6 +4,20 @@ import UserNotifications
 
 private let logger = Logger(subsystem: "com.transcribeer", category: "delegate")
 
+/// App-wide build metadata.
+enum AppBuild {
+    /// `true` when compiled with `-DDEV_BUILD` (i.e. via `make dev` / `make gui-build`).
+    /// Compile-time constant — dead code is stripped in release builds that
+    /// omit the flag, so there is zero runtime overhead.
+    static let isDevBuild: Bool = {
+        #if DEV_BUILD
+        return true
+        #else
+        return false
+        #endif
+    }()
+}
+
 /// Handles app lifecycle events and notification delegation.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var onRecord: (() -> Void)?

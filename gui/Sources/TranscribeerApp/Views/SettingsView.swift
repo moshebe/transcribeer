@@ -31,6 +31,9 @@ struct SettingsView: View {
             }
         }
         .frame(width: 640, height: 460)
+        .overlay(alignment: .bottomLeading) {
+            if AppBuild.isDevBuild { DevBadge() }
+        }
         .onAppear {
             apiKey = KeychainHelper.getAPIKey(backend: config.llmBackend) ?? ""
             reloadTranscriptionKey()
