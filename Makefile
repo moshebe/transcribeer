@@ -45,7 +45,7 @@ DEV_VARIANT_NAME     = Transcribeer (dev)
 OBSIDIAN_VAULT ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/$(shell id -un)
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build build-dev build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture
+.PHONY: gui gui-build gui-build-release build-dev build-release build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture
 
 help:
 	@echo "dev targets:"
@@ -54,9 +54,11 @@ help:
 	@echo "  make dev-restart    restart the launch agent"
 	@echo "  make start          ensure the dev agent is loaded and running (no rebuild)"
 	@echo "  make stop           stop the running dev agent process (keeps plist)"
-	@echo "  make build-dev          build Swift GUI as .app bundle"
-	@echo "  make gui                build + launch .app bundle"
-	@echo "  make gui-build          build Swift binary only (no bundle)"
+	@echo "  make build-dev          build Swift GUI as .app bundle (with DEV badge)"
+	@echo "  make build-release      build Swift GUI as .app bundle (no DEV badge)"
+	@echo "  make gui                build + launch .app bundle (with DEV badge)"
+	@echo "  make gui-build          build Swift binary only (no bundle, with DEV badge)"
+	@echo "  make gui-build-release  build Swift binary only (no bundle, no DEV badge)"
 	@echo "  make build-dev-variant  build a side-by-side 'dev' bundle that runs alongside a main install"
 	@echo "  make gui-dev-variant    build-dev-variant + launch"
 	@echo "  make reset-mac-permissions  kill processes + reset mic/system-audio TCC entries"
@@ -279,9 +281,15 @@ stop:
 	fi
 
 # ── Swift native GUI ──────────────────────────────────────────────────────────
+# gui-build: compile with DEV_BUILD flag (used by make dev / make gui).
+# gui-build-release: compile without DEV_BUILD flag (production binary, no badge).
 gui-build:
 	cd gui && swift build -c release -q -Xswiftc -DDEV_BUILD
 	@echo "✓ gui binary: gui/.build/release/TranscribeerApp"
+
+gui-build-release:
+	cd gui && swift build -c release -q
+	@echo "✓ gui binary (release): gui/.build/release/TranscribeerApp"
 
 # build-dev is incremental: a no-op `swift build` paired with an unsigned
 # release binary that matches APP_UNSIGNED_BACKUP byte-for-byte skips the
@@ -340,6 +348,20 @@ build-dev: gui-build
 
 gui: build-dev
 	open $(APP_BUNDLE)
+
+# build-release: compile without -DDEV_BUILD, then assemble + sign the bundle.
+# Use this when you want to run the production binary (no DEV badge).
+build-release: gui-build-release
+	@set -e; \
+	mkdir -p $(APP_MACOS) $(APP_RESOURCES); \
+	cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.new; \
+	mv -f $(APP_MACOS)/TranscribeerApp.new $(APP_MACOS)/TranscribeerApp; \
+	cp gui/.build/release/TranscribeerApp $(APP_UNSIGNED_BACKUP); \
+	cmp -s gui/Info.plist $(APP_CONTENTS)/Info.plist || cp gui/Info.plist $(APP_CONTENTS)/Info.plist; \
+	codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) --options runtime $(APP_BUNDLE) 2>/dev/null || \
+	  codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) $(APP_BUNDLE); \
+	touch $(APP_STAMP); \
+	echo "✓ app bundle (release, no DEV badge): $(APP_BUNDLE)"
 
 # ── side-by-side dev variant ──────────────────────────────────────────────────
 # Rebuilds the main bundle first (so binary + icon are fresh),
