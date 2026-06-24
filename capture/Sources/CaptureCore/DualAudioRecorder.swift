@@ -40,13 +40,32 @@ public final class DualAudioRecorder: @unchecked Sendable {
 
     // MARK: - Public API
 
+    /// Thrown by `start()` when the microphone tap cannot be installed.
+    public struct MicCaptureError: LocalizedError {
+        public let errorDescription: String?
+        init(_ message: String) { errorDescription = message }
+    }
+
     /// Start both capture streams and begin writing to CAF sidecars.
+    ///
+    /// Throws `MicCaptureError` when the microphone tap fails immediately
+    /// (e.g. format mismatch due to a VPIO/Bluetooth SCO context).  The error
+    /// message is user-facing and safe to display directly in an alert.
     public func start() async throws {
         let sysStreams = try await sysCapture.bufferStream(outputDeviceID: outputDeviceID)
         let micStream = micCapture.bufferStream(
             deviceID: inputDeviceID,
             echoCancellation: echoCancellation
         )
+
+        // `bufferStream` sets `captureError` synchronously and finishes the
+        // stream before returning when the tap format is invalid.  Yield once
+        // so the AsyncStream machinery can flush the finish signal, then check.
+        await Task.yield()
+        if let err = micCapture.captureError {
+            logger.error("Mic tap failed at start: \(err, privacy: .public)")
+            throw MicCaptureError(err)
+        }
 
         micTask = Task { [self] in
             for await buffer in micStream {
