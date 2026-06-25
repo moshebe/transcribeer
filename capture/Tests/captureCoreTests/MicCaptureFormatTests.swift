@@ -24,17 +24,19 @@ private func withContinuation(
 // MARK: - Tests
 
 struct MicCaptureFormatTests {
-
     // MARK: validateTapFormat — valid cases
 
     @Test("Valid 48 kHz mono format passes validation")
     func validMonoFormat() {
-        let format = AVAudioFormat(
+        guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 48_000,
             channels: 1,
             interleaved: false
-        )!
+        ) else {
+            Issue.record("Could not construct AVAudioFormat for 48 kHz mono")
+            return
+        }
         let errorHolder = SyncString()
         var streamFinished = false
         let stream = AsyncStream<AVAudioPCMBuffer> { continuation in
@@ -54,12 +56,15 @@ struct MicCaptureFormatTests {
         // 1 ch, 24 000 Hz, Float32 (VPIO / Bluetooth SCO context).
         // It should pass validation — it's a legitimate node format,
         // just not the one `pickTapFormat` used to synthesise.
-        let format = AVAudioFormat(
+        guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 24_000,
             channels: 1,
             interleaved: false
-        )!
+        ) else {
+            Issue.record("Could not construct AVAudioFormat for 24 kHz mono")
+            return
+        }
         let errorHolder = SyncString()
         let stream = AsyncStream<AVAudioPCMBuffer> { continuation in
             let ok = MicCapture.validateTapFormat(format, errorHolder: errorHolder, continuation: continuation)
@@ -71,12 +76,15 @@ struct MicCaptureFormatTests {
 
     @Test("Valid stereo 44.1 kHz format passes validation")
     func validStereoFormat() {
-        let format = AVAudioFormat(
+        guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 44_100,
             channels: 2,
             interleaved: false
-        )!
+        ) else {
+            Issue.record("Could not construct AVAudioFormat for 44.1 kHz stereo")
+            return
+        }
         let errorHolder = SyncString()
         let stream = AsyncStream<AVAudioPCMBuffer> { continuation in
             let ok = MicCapture.validateTapFormat(format, errorHolder: errorHolder, continuation: continuation)
