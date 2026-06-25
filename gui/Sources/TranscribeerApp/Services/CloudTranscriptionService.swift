@@ -491,9 +491,7 @@ final class CloudProgressTracker: @unchecked Sendable {
 /// pulling in a generated client — it's a single endpoint and the response
 /// fields we care about (`segments[].start/end/text`) are stable.
 enum OpenAITranscription {
-    private static let endpoint = URL(
-        string: "https://api.openai.com/v1/audio/transcriptions"
-    )! // swiftlint:disable:this force_unwrapping
+    private static let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
 
     static func call(
         audioURL: URL,
