@@ -13,7 +13,6 @@ import Testing
 /// held B's value. Tests here verify that `setName` is isolated — writes to one
 /// session never affect another.
 struct SessionManagerRenameTests {
-
     // MARK: - Helpers
 
     private static func makeSessionDir(prefix: String = "rename") throws -> URL {
