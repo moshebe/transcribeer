@@ -20,7 +20,7 @@ struct AppConfigTests {
         #expect(cfg.sessionsDir == "~/.transcribeer/sessions")
         #expect(cfg.pipelineMode == "record+transcribe+summarize")
         #expect(!cfg.meetingAutoRecord)
-        #expect(cfg.promptOnStop)
+        #expect(!cfg.promptOnStop) // default false — user opts in (Track 4.3)
     }
 
     @Test("Transcription backend + cloud models round-trip via TOMLDecoder")

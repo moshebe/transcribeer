@@ -80,6 +80,8 @@ struct TranscribeerApp: App {
     @State private var scheduler = ScheduledTranscriptionService()
     @State private var config = ConfigManager.load()
     @State private var autoRecordCountdown: AutoRecordCountdown?
+    @State private var resourceGovernor = ResourceGovernor()
+    @State private var onboardingState = OnboardingState()
     /// Timestamp of the most recent auto-stop triggered by a meeting-ended
     /// detection. Used to suppress detector flicker that would otherwise
     /// spawn a second session dir seconds after the first one stopped.
@@ -88,8 +90,10 @@ struct TranscribeerApp: App {
     var body: some Scene {
         MenuBarExtra {
             menuContent
+                .environment(resourceGovernor)
                 .onChange(of: runner.state) { _, new in
                     DockTileBadger.setRecording(new.isRecording)
+                    openPipelineSheetWindowIfNeeded(new)
                 }
         } label: {
             MenuBarIcon(runner: runner)
@@ -98,25 +102,47 @@ struct TranscribeerApp: App {
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(config: $config)
-                .onChange(of: config.scheduledTranscriptionEnabled) { _, _ in
-                    scheduler.reschedule()
-                }
-                .onChange(of: config.scheduledTranscriptionHour) { _, _ in
-                    scheduler.reschedule()
-                }
+            SettingsView(
+                config: $config,
+                transcriptionService: runner.transcriptionService,
+                onboardingState: onboardingState,
+                applyHotkey: { [appDelegate] cfg in appDelegate.applyHotkey(from: cfg) }
+            )
+            .environment(resourceGovernor)
+            .onChange(of: config.scheduledTranscriptionEnabled) { _, _ in
+                scheduler.reschedule()
+            }
+            .onChange(of: config.scheduledTranscriptionHour) { _, _ in
+                scheduler.reschedule()
+            }
         }
 
         Window("Recording History", id: "history") {
             HistoryView(config: $config, runner: runner)
         }
         .defaultSize(width: 900, height: 600)
+
+        Window("Setup", id: "onboarding") {
+            OnboardingSheet(state: onboardingState)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+
+        // Lightweight window for post-recording / long-recording sheet prompts.
+        Window("Recording Action", id: "pipeline-sheet") {
+            PipelineSheetWindow(runner: runner)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 
     // MARK: - Menu
 
     @ViewBuilder
     private var menuContent: some View {
+        ResourceStatusBanner()
+
         if config.zoomEnricherEnabled, !AccessibilityGuard.isTrusted {
             Text("⚠ Accessibility not granted — Zoom title & participants disabled")
             Button("Grant Accessibility…") {
@@ -150,6 +176,13 @@ struct TranscribeerApp: App {
         case .recording(let startTime):
             RecordingMenuItems(runner: runner, startTime: startTime)
 
+        case .awaitingPostRecordingChoice:
+            Text("⏸ Recording saved — choose action")
+            Button("Choose Action…") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "pipeline-sheet")
+            }
+
         case .transcribing:
             if let pct = runner.transcriptionProgress {
                 Text("📝 Transcribing… \(Int(pct * 100))%")
@@ -158,6 +191,13 @@ struct TranscribeerApp: App {
             }
             Button("⏹ Stop") {
                 runner.cancelProcessing()
+            }
+
+        case .awaitingLongRecordingConfirmation:
+            Text("⏸ Long recording — confirm summarization")
+            Button("Confirm…") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "pipeline-sheet")
             }
 
         case .summarizing:
@@ -201,6 +241,19 @@ struct TranscribeerApp: App {
 
     @Environment(\.openWindow) private var openWindow
 
+    /// Open the pipeline-sheet window when the runner enters a state that
+    /// requires user input. The window hosts `PipelineSheetWindow` which
+    /// renders the appropriate sheet based on runner state.
+    private func openPipelineSheetWindowIfNeeded(_ state: AppState) {
+        switch state {
+        case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation:
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "pipeline-sheet")
+        default:
+            break
+        }
+    }
+
     // MARK: - Lifecycle
 
     private func onFirstAppear() {
@@ -210,6 +263,7 @@ struct TranscribeerApp: App {
                 "gc: trashed \(trashed.count, privacy: .public) abandoned session(s) at launch",
             )
         }
+        runner.transcriptionService.resourceGovernor = resourceGovernor
         meetingDetector.start()
         showFirstRunOnboardingIfNeeded()
 
@@ -228,6 +282,9 @@ struct TranscribeerApp: App {
         }
 
         startMeetingChangeObservation()
+
+        // Register the global open-app hotkey from config.
+        appDelegate.applyHotkey(from: config)
 
         scheduler.start(runner: runner) { ConfigManager.load() }
 
@@ -263,23 +320,8 @@ struct TranscribeerApp: App {
     }
 
     private func showFirstRunOnboardingIfNeeded() {
-        let key = "com.transcribeer.onboardingShown"
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
-        UserDefaults.standard.set(true, forKey: key)
-
-        let alert = NSAlert()
-        alert.messageText = "Welcome to Transcribeer"
-        alert.informativeText = (
-            "Transcribeer needs two permissions to capture both sides of a call:\n\n"
-                + "• Microphone — to record your voice.\n"
-                + "• System Audio Recording — to record the other participants.\n\n"
-                + "System Audio Recording can be enabled in System Settings → "
-                + "Privacy & Security → System Audio Recording.\n\n"
-                + "You can change devices, labels, and echo cancellation in Settings → Audio."
-        )
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Get Started")
-        alert.runModal()
+        guard onboardingState.shouldShowOnboarding else { return }
+        openWindow(id: "onboarding")
     }
 
     // MARK: - Meeting integration

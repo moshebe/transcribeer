@@ -40,13 +40,42 @@ struct AppConfig: Equatable {
     /// so we skip collection entirely while the observed count exceeds this.
     /// Values `<= 0` disable participant capture.
     var maxMeetingParticipants: Int = 10
-    var promptOnStop: Bool = true
+    var promptOnStop: Bool = false
+    /// Warn before summarizing recordings longer than this many minutes.
+    /// 0 = disabled (Track 4.5).
+    var longRecordingThresholdMinutes: Int = 30
     /// When true, a daily background job processes the previous day's
     /// recordings (transcribe + summarize) at `scheduledTranscriptionHour`.
     var scheduledTranscriptionEnabled: Bool = false
     /// Hour-of-day (0–23, local time) the scheduled job fires. Default 3 AM.
     var scheduledTranscriptionHour: Int = 3
+    /// Global hotkey to open/activate the app from any context.
+    /// Encoded as e.g. `"cmd+shift+t"`. Empty string disables the hotkey.
+    var openAppHotkey: String = "cmd+shift+t"
     var audio = AudioSettings()
+    /// Minutes of inactivity before the loaded WhisperKit model is auto-unloaded. 0 = never.
+    var idleUnloadMinutes: Int = 10
+    // MARK: Language-specific model routing (Track 2.2)
+    /// WhisperKit model used when `language == "he"`. Defaults to the recommended ivrit.ai turbo.
+    var hebrewWhisperModel: String = "ivrit-ai_whisper-large-v3-turbo"
+    /// Custom HuggingFace repo for the Hebrew model. Empty = use local HebrewModelDownloader cache.
+    var hebrewWhisperModelRepo: String = ""
+    /// WhisperKit model used when `language == "en"`. Defaults to the recommended OpenAI turbo.
+    var englishWhisperModel: String = "openai_whisper-large-v3-turbo"
+    /// Custom HuggingFace repo for the English model. Empty = use argmaxinc/whisperkit-coreml.
+    var englishWhisperModelRepo: String = ""
+
+    // MARK: - Integrations (Track 4.4)
+
+    struct IntegrationsConfig: Equatable {
+        var obsidianEnabled: Bool = false
+        var obsidianVaultPath: String = ""
+        var clipboardCopySummary: Bool = false
+        var clipboardCopyTranscript: Bool = false
+        var exportFormats: [String] = []
+    }
+
+    var integrations: IntegrationsConfig = .init()
 
     var expandedSessionsDir: String {
         (sessionsDir as NSString).expandingTildeInPath
@@ -74,6 +103,7 @@ struct TOMLFile: Decodable {
     var summarization: SummarizationSection?
     var paths: PathsSection?
     var audio: AudioSection?
+    var integrations: IntegrationsSection?
 }
 
 struct PipelineSection: Decodable {
@@ -85,6 +115,9 @@ struct PipelineSection: Decodable {
     var max_meeting_participants: Int?
     var scheduled_transcription_enabled: Bool?
     var scheduled_transcription_hour: Int?
+    var prompt_on_stop: Bool?
+    var long_recording_threshold_minutes: Int?
+    var open_app_hotkey: String?
 }
 
 struct TranscriptionSection: Decodable {
@@ -96,6 +129,12 @@ struct TranscriptionSection: Decodable {
     var gemini_model: String?
     var diarization: String?
     var num_speakers: Int?
+    var idle_unload_minutes: Int?
+    // Track 2.2 — language-specific model routing
+    var hebrew_model: String?
+    var hebrew_model_repo: String?
+    var english_model: String?
+    var english_model_repo: String?
 }
 
 struct SummarizationSection: Decodable {
@@ -116,6 +155,14 @@ struct AudioSection: Decodable {
     var self_label: String?
     var other_label: String?
     var diarize_mic_multiuser: Bool?
+}
+
+struct IntegrationsSection: Decodable {
+    var obsidian_enabled: Bool?
+    var obsidian_vault_path: String?
+    var clipboard_copy_summary: Bool?
+    var clipboard_copy_transcript: Bool?
+    var export_formats: [String]?
 }
 
 // swiftlint:enable discouraged_optional_boolean
@@ -159,6 +206,7 @@ enum ConfigManager {
         if let summarization = toml.summarization { applySummarization(summarization, to: &cfg) }
         if let paths = toml.paths { applyPaths(paths, to: &cfg) }
         if let audio = toml.audio { applyAudio(audio, to: &cfg) }
+        if let integrations = toml.integrations { applyIntegrations(integrations, to: &cfg) }
         return cfg
     }
 
@@ -180,6 +228,14 @@ enum ConfigManager {
         if let hour = s.scheduled_transcription_hour, (0...23).contains(hour) {
             cfg.scheduledTranscriptionHour = hour
         }
+        // nil in TOML → keep default "cmd+shift+t"; present empty string → disabled
+        if let hotkey = s.open_app_hotkey {
+            cfg.openAppHotkey = hotkey
+        }
+        cfg.promptOnStop = s.prompt_on_stop ?? cfg.promptOnStop
+        if let threshold = s.long_recording_threshold_minutes, threshold >= 0 {
+            cfg.longRecordingThresholdMinutes = threshold
+        }
     }
 
     private static func applyTranscription(_ s: TranscriptionSection, to cfg: inout AppConfig) {
@@ -191,6 +247,13 @@ enum ConfigManager {
         cfg.geminiTranscriptionModel = s.gemini_model ?? cfg.geminiTranscriptionModel
         cfg.diarization = s.diarization ?? cfg.diarization
         cfg.numSpeakers = s.num_speakers ?? cfg.numSpeakers
+        if let minutes = s.idle_unload_minutes, minutes >= 0 {
+            cfg.idleUnloadMinutes = minutes
+        }
+        cfg.hebrewWhisperModel = s.hebrew_model ?? cfg.hebrewWhisperModel
+        cfg.hebrewWhisperModelRepo = s.hebrew_model_repo ?? cfg.hebrewWhisperModelRepo
+        cfg.englishWhisperModel = s.english_model ?? cfg.englishWhisperModel
+        cfg.englishWhisperModelRepo = s.english_model_repo ?? cfg.englishWhisperModelRepo
     }
 
     private static func applySummarization(_ s: SummarizationSection, to cfg: inout AppConfig) {
@@ -213,6 +276,18 @@ enum ConfigManager {
         cfg.audio.diarizeMicMultiuser = s.diarize_mic_multiuser ?? cfg.audio.diarizeMicMultiuser
     }
 
+    private static func applyIntegrations(_ s: IntegrationsSection, to cfg: inout AppConfig) {
+        cfg.integrations.obsidianEnabled = s.obsidian_enabled ?? cfg.integrations.obsidianEnabled
+        cfg.integrations.obsidianVaultPath = s.obsidian_vault_path ?? cfg.integrations.obsidianVaultPath
+        cfg.integrations.clipboardCopySummary =
+            s.clipboard_copy_summary ?? cfg.integrations.clipboardCopySummary
+        cfg.integrations.clipboardCopyTranscript =
+            s.clipboard_copy_transcript ?? cfg.integrations.clipboardCopyTranscript
+        if let formats = s.export_formats {
+            cfg.integrations.exportFormats = formats
+        }
+    }
+
     static func save(_ cfg: AppConfig) {
         let dir = configPath.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -220,6 +295,9 @@ enum ConfigManager {
         let speakers = cfg.numSpeakers
         let autoRecordApps = cfg.meetingAutoRecordApps
             .sorted()
+            .map(tomlString)
+            .joined(separator: ", ")
+        let exportFormats = cfg.integrations.exportFormats
             .map(tomlString)
             .joined(separator: ", ")
         let lines = """
@@ -232,6 +310,9 @@ enum ConfigManager {
         zoom_enricher_enabled = \(cfg.zoomEnricherEnabled)
         scheduled_transcription_enabled = \(cfg.scheduledTranscriptionEnabled)
         scheduled_transcription_hour = \(cfg.scheduledTranscriptionHour)
+        open_app_hotkey = \(tomlString(cfg.openAppHotkey))
+        prompt_on_stop = \(cfg.promptOnStop)
+        long_recording_threshold_minutes = \(cfg.longRecordingThresholdMinutes)
 
         [transcription]
         language = \(tomlString(cfg.language))
@@ -242,6 +323,11 @@ enum ConfigManager {
         gemini_model = \(tomlString(cfg.geminiTranscriptionModel))
         diarization = \(tomlString(cfg.diarization))
         num_speakers = \(speakers)
+        idle_unload_minutes = \(cfg.idleUnloadMinutes)
+        hebrew_model = \(tomlString(cfg.hebrewWhisperModel))
+        hebrew_model_repo = \(tomlString(cfg.hebrewWhisperModelRepo))
+        english_model = \(tomlString(cfg.englishWhisperModel))
+        english_model_repo = \(tomlString(cfg.englishWhisperModelRepo))
 
         [summarization]
         backend = \(tomlString(cfg.llmBackend))
@@ -259,6 +345,13 @@ enum ConfigManager {
         self_label = \(tomlString(cfg.audio.selfLabel))
         other_label = \(tomlString(cfg.audio.otherLabel))
         diarize_mic_multiuser = \(cfg.audio.diarizeMicMultiuser)
+
+        [integrations]
+        obsidian_enabled = \(cfg.integrations.obsidianEnabled)
+        obsidian_vault_path = \(tomlString(cfg.integrations.obsidianVaultPath))
+        clipboard_copy_summary = \(cfg.integrations.clipboardCopySummary)
+        clipboard_copy_transcript = \(cfg.integrations.clipboardCopyTranscript)
+        export_formats = [\(exportFormats)]
         """
         try? lines.write(to: configPath, atomically: true, encoding: .utf8)
     }

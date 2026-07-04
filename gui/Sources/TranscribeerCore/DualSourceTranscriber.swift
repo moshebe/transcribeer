@@ -25,6 +25,21 @@ public enum DualSourceTranscriber {
 
     // MARK: - Public API
 
+    /// Result of a dual-source transcription: the merged labeled segments plus
+    /// the language WhisperKit auto-detected. `detectedLanguage` is `nil` when
+    /// an explicit language code was used instead of `"auto"`.
+    public struct TranscriptionOutput: Sendable {
+        public let segments: [LabeledSegment]
+        /// Two-letter ISO 639-1 code detected by WhisperKit during auto-detection.
+        /// `nil` when an explicit language code was provided.
+        public let detectedLanguage: String?
+
+        public init(segments: [LabeledSegment], detectedLanguage: String?) {
+            self.segments = segments
+            self.detectedLanguage = detectedLanguage
+        }
+    }
+
     /// Transcribe a session directory.
     ///
     /// - If `audio.mic.caf` or `audio.sys.caf` exists, runs the dual path.
@@ -35,7 +50,7 @@ public enum DualSourceTranscriber {
         timing: TimingInfo,
         onMicProgress: (@Sendable (Double) -> Void)? = nil,
         onSysProgress: (@Sendable (Double) -> Void)? = nil
-    ) async throws -> [LabeledSegment] {
+    ) async throws -> TranscriptionOutput {
         let micURL = session.appendingPathComponent("audio.mic.caf")
         let sysURL = session.appendingPathComponent("audio.sys.caf")
 
@@ -71,13 +86,16 @@ public enum DualSourceTranscriber {
     }
 
     /// Swappable chunk transcription backend for unit testing.
+    /// Returns plain segments; detected language is not threaded through
+    /// this seam so tests remain simple. The production path captures language
+    /// via `transcribeLegacyMixed` → `ChunkedTranscriber.TranscriptionOutput`.
     internal static var transcribeChunkFunc: (
         _ audioURL: URL,
         _ modelName: String,
         _ modelRepo: String?,
         _ downloadBase: URL,
         _ language: String,
-        _ maxConcurrency: Int,
+        _ budget: TranscriptionBudget,
         _ onProgress: (@Sendable (Double) -> Void)?
     ) async throws -> [TranscriptSegment] = defaultTranscribeChunk
 
@@ -88,18 +106,19 @@ public enum DualSourceTranscriber {
         modelRepo: String?,
         downloadBase: URL,
         language: String,
-        maxConcurrency: Int,
+        budget: TranscriptionBudget,
         onProgress: (@Sendable (Double) -> Void)?
     ) async throws -> [TranscriptSegment] {
-        try await ChunkedTranscriber.transcribe(
+        let output = try await ChunkedTranscriber.transcribe(
             audioURL: audioURL,
             modelName: modelName,
             modelRepo: modelRepo,
             downloadBase: downloadBase,
             language: language,
-            maxConcurrency: maxConcurrency,
+            budget: budget,
             onProgress: onProgress
         )
+        return output.segments
     }
 
     /// Swappable audio-validation backend for unit testing.
@@ -120,7 +139,7 @@ public enum DualSourceTranscriber {
         timing: TimingInfo,
         cfg: AppConfig,
         progress: ProgressCallbacks
-    ) async throws -> [LabeledSegment] {
+    ) async throws -> TranscriptionOutput {
         if timing.micStartEpoch == nil && timing.sysStartEpoch == nil {
             logger.warning("timing.json missing; assuming both streams start at epoch 0")
         }
@@ -148,7 +167,7 @@ public enum DualSourceTranscriber {
                 modelRepo,
                 modelsDir,
                 cfg.language,
-                1,
+                .conservative,
                 progress.mic
             )
         }()
@@ -168,7 +187,7 @@ public enum DualSourceTranscriber {
                 modelRepo,
                 modelsDir,
                 cfg.language,
-                1,
+                .conservative,
                 progress.sys
             )
         }()
@@ -201,7 +220,12 @@ public enum DualSourceTranscriber {
             otherLabel: cfg.audio.otherLabel
         )
 
-        return merge(mic: micLabeled, sys: sysLabeled, otherLabel: cfg.audio.otherLabel)
+        let segments = merge(mic: micLabeled, sys: sysLabeled, otherLabel: cfg.audio.otherLabel)
+        // The dual path uses `transcribeChunkFunc` (a test seam) which returns
+        // plain `[TranscriptSegment]` without language info. Detected language
+        // is not propagated here; it is captured via the legacy-mixed path and
+        // `TranscriptionService.lastDetectedLanguage`.
+        return TranscriptionOutput(segments: segments, detectedLanguage: nil)
     }
 
     private static func labelMicSegments(
@@ -303,10 +327,10 @@ public enum DualSourceTranscriber {
         mixed: URL,
         cfg: AppConfig,
         onProgress: (@Sendable (Double) -> Void)?
-    ) async throws -> [LabeledSegment] {
+    ) async throws -> TranscriptionOutput {
         try AudioValidation.ensureAudibleSignal(at: mixed)
 
-        let segments = try await ChunkedTranscriber.transcribe(
+        let chunkedOutput = try await ChunkedTranscriber.transcribe(
             audioURL: mixed,
             modelName: cfg.whisperModel,
             modelRepo: cfg.whisperModelRepo.isEmpty ? nil : cfg.whisperModelRepo,
@@ -314,21 +338,27 @@ public enum DualSourceTranscriber {
             language: cfg.language,
             onProgress: onProgress
         )
+        let segments = chunkedOutput.segments
 
+        let labeled: [LabeledSegment]
         if cfg.diarization == "off" || cfg.diarization == "none" {
-            return segments.map { seg in
+            labeled = segments.map { seg in
                 LabeledSegment(start: seg.start, end: seg.end, speaker: "Speaker", text: seg.text)
             }
+        } else {
+            let diarSegments = try await DiarizationService.diarize(
+                audioURL: mixed,
+                numSpeakers: cfg.numSpeakers > 0 ? cfg.numSpeakers : nil
+            )
+            labeled = TranscriptFormatter.assignSpeakers(
+                whisperSegments: segments,
+                diarSegments: diarSegments
+            )
         }
 
-        let diarSegments = try await DiarizationService.diarize(
-            audioURL: mixed,
-            numSpeakers: cfg.numSpeakers > 0 ? cfg.numSpeakers : nil
-        )
-
-        return TranscriptFormatter.assignSpeakers(
-            whisperSegments: segments,
-            diarSegments: diarSegments
+        return TranscriptionOutput(
+            segments: labeled,
+            detectedLanguage: chunkedOutput.detectedLanguage
         )
     }
 }

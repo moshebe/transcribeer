@@ -88,17 +88,18 @@ struct PipelineIntegrationTests {
         )
 
         // 5. Verify interleaved output with correct labels.
-        #expect(segments.count == 2)
+        let segs = segments.segments
+        #expect(segs.count == 2)
         // Mic tagged as selfLabel, sys tagged as otherLabel.
-        let agentSegs = segments.filter { $0.speaker == "Agent" }
-        let customerSegs = segments.filter { $0.speaker == "Customer" }
+        let agentSegs = segs.filter { $0.speaker == "Agent" }
+        let customerSegs = segs.filter { $0.speaker == "Customer" }
         #expect(agentSegs.count == 1)
         #expect(customerSegs.count == 1)
         #expect(agentSegs.first?.text == "Agent speaking first")
         #expect(customerSegs.first?.text == "Customer responds")
 
         // 6. Formatted transcript contains both speakers.
-        let formatted = TranscriptFormatter.formatDual(segments)
+        let formatted = TranscriptFormatter.formatDual(segs)
         #expect(formatted.contains("Agent:"))
         #expect(formatted.contains("Customer:"))
     }
@@ -222,16 +223,17 @@ private func stubTranscription(
 }
 
 private func resetDualSourceMocks() {
-    DualSourceTranscriber.transcribeChunkFunc = { url, model, repo, base, lang, conc, prog in
-        try await ChunkedTranscriber.transcribe(
+    DualSourceTranscriber.transcribeChunkFunc = { url, model, repo, base, lang, budget, prog in
+        let out = try await ChunkedTranscriber.transcribe(
             audioURL: url,
             modelName: model,
             modelRepo: repo,
             downloadBase: base,
             language: lang,
-            maxConcurrency: conc,
+            budget: budget,
             onProgress: prog
         )
+        return out.segments
     }
     DualSourceTranscriber.ensureAudibleFunc = { url in
         try AudioValidation.ensureAudibleSignal(at: url)

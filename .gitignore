@@ -32,3 +32,5 @@ obsidian-plugin/main.js
 # Secrets / env
 .env
 .env.local
+scripts/whisperkittools
+whisperkittools/

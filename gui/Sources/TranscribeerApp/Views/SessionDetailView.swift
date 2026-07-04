@@ -247,6 +247,10 @@ struct SessionDetailView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
+            if let lang = detail.detectedLanguage {
+                detectedLanguageChip(lang)
+            }
+
             if !detail.participants.isEmpty {
                 SessionParticipantsRow(participants: detail.participants)
             }
@@ -255,6 +259,39 @@ struct SessionDetailView: View {
         .padding(.horizontal, 20)
         .padding(.top, 16)
         .padding(.bottom, 12)
+    }
+
+    // MARK: - Detected language chip
+
+    private func detectedLanguageChip(_ lang: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "waveform")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            Text("Detected: \(TranscriptionLanguage.displayName(for: lang))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Menu {
+                Button("Re-transcribe as Hebrew") {
+                    onTranscribe(.init(language: TranscriptionLanguage.hebrew.rawValue, backend: nil))
+                }
+                Button("Re-transcribe as English") {
+                    onTranscribe(.init(language: TranscriptionLanguage.english.rawValue, backend: nil))
+                }
+                Button("Re-transcribe (auto-detect)") {
+                    onTranscribe(.init(language: nil, backend: nil))
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary, in: Capsule())
     }
 
     // MARK: - Tab bar
