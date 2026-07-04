@@ -297,6 +297,7 @@ final class TranscriptionService {
         let onSysProgress: @Sendable (Double) -> Void = { value in
             Task { @MainActor in self.applySysProgress(value) }
         }
+        let budget = resourceGovernor?.currentBudget() ?? .standard
         let task = Task.detached(priority: .userInitiated) {
             () -> DualSourceTranscriber.TranscriptionOutput in
             try Task.checkCancellation()
@@ -304,6 +305,7 @@ final class TranscriptionService {
                 session: session,
                 cfg: coreCfg,
                 timing: timing,
+                budget: budget,
                 onMicProgress: onMicProgress,
                 onSysProgress: onSysProgress
             )

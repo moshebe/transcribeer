@@ -61,47 +61,52 @@ struct PipelineIntegrationTests {
         #expect(FileManager.default.fileExists(atPath: timingURL.path))
         #expect(FileManager.default.fileExists(atPath: outputURL.path))
 
-        // 4. Transcribe via DualSourceTranscriber with mocked ML backends.
-        let (micSegs, sysSegs) = stubTranscription(
-            micText: "Agent speaking first",
-            sysText: "Customer responds"
-        )
-        DualSourceTranscriber.transcribeChunkFunc = { url, _, _, _, _, _, _ in
-            url.lastPathComponent.contains("mic") ? micSegs : sysSegs
+        try await dualSourceTranscriberMockLock.withLock {
+            // 4. Transcribe via DualSourceTranscriber with mocked ML backends.
+            let (micSegs, sysSegs) = stubTranscription(
+                micText: "Agent speaking first",
+                sysText: "Customer responds"
+            )
+            DualSourceTranscriber.transcribeChunkFunc = { url, _, _, _, _, _, _ in
+                ChunkedTranscriber.TranscriptionOutput(
+                    segments: url.lastPathComponent.contains("mic") ? micSegs : sysSegs,
+                    detectedLanguage: nil
+                )
+            }
+            DualSourceTranscriber.ensureAudibleFunc = { _ in }
+            defer { resetDualSourceMocks() }
+
+            var cfg = AppConfig()
+            cfg.audio.selfLabel = "Agent"
+            cfg.audio.otherLabel = "Customer"
+
+            let segments = try await DualSourceTranscriber.transcribeDual(
+                mic: sessionDir.appendingPathComponent("audio.mic.caf"),
+                sys: sessionDir.appendingPathComponent("audio.sys.caf"),
+                timing: .init(
+                    micStartEpoch: timing.micStartEpoch,
+                    sysStartEpoch: timing.sysStartEpoch
+                ),
+                cfg: cfg,
+                progress: .init(mic: nil, sys: nil)
+            )
+
+            // 5. Verify interleaved output with correct labels.
+            let segs = segments.segments
+            #expect(segs.count == 2)
+            // Mic tagged as selfLabel, sys tagged as otherLabel.
+            let agentSegs = segs.filter { $0.speaker == "Agent" }
+            let customerSegs = segs.filter { $0.speaker == "Customer" }
+            #expect(agentSegs.count == 1)
+            #expect(customerSegs.count == 1)
+            #expect(agentSegs.first?.text == "Agent speaking first")
+            #expect(customerSegs.first?.text == "Customer responds")
+
+            // 6. Formatted transcript contains both speakers.
+            let formatted = TranscriptFormatter.formatDual(segs)
+            #expect(formatted.contains("Agent:"))
+            #expect(formatted.contains("Customer:"))
         }
-        DualSourceTranscriber.ensureAudibleFunc = { _ in }
-        defer { resetDualSourceMocks() }
-
-        var cfg = AppConfig()
-        cfg.audio.selfLabel = "Agent"
-        cfg.audio.otherLabel = "Customer"
-
-        let segments = try await DualSourceTranscriber.transcribeDual(
-            mic: sessionDir.appendingPathComponent("audio.mic.caf"),
-            sys: sessionDir.appendingPathComponent("audio.sys.caf"),
-            timing: .init(
-                micStartEpoch: timing.micStartEpoch,
-                sysStartEpoch: timing.sysStartEpoch
-            ),
-            cfg: cfg,
-            progress: .init(mic: nil, sys: nil)
-        )
-
-        // 5. Verify interleaved output with correct labels.
-        let segs = segments.segments
-        #expect(segs.count == 2)
-        // Mic tagged as selfLabel, sys tagged as otherLabel.
-        let agentSegs = segs.filter { $0.speaker == "Agent" }
-        let customerSegs = segs.filter { $0.speaker == "Customer" }
-        #expect(agentSegs.count == 1)
-        #expect(customerSegs.count == 1)
-        #expect(agentSegs.first?.text == "Agent speaking first")
-        #expect(customerSegs.first?.text == "Customer responds")
-
-        // 6. Formatted transcript contains both speakers.
-        let formatted = TranscriptFormatter.formatDual(segs)
-        #expect(formatted.contains("Agent:"))
-        #expect(formatted.contains("Customer:"))
     }
 
     @Test("Legacy session (no CAF sidecars) falls back to mixed-file transcription")
@@ -233,7 +238,7 @@ private func resetDualSourceMocks() {
             budget: budget,
             onProgress: prog
         )
-        return out.segments
+        return out
     }
     DualSourceTranscriber.ensureAudibleFunc = { url in
         try AudioValidation.ensureAudibleSignal(at: url)
