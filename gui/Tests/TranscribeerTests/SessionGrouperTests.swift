@@ -49,6 +49,8 @@ struct SessionGrouperTests {
             hasSummary: false,
             startedAt: nil,
             endedAt: nil,
+            transcriptionUsage: nil,
+            summarizationUsage: nil,
         )
     }
 

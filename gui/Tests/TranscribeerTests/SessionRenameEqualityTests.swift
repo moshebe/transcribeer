@@ -60,6 +60,8 @@ struct SessionRenameEqualityTests {
             hasSummary: false,
             startedAt: nil,
             endedAt: nil,
+            transcriptionUsage: nil,
+            summarizationUsage: nil,
         )
     }
 

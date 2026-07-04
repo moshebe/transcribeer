@@ -29,6 +29,10 @@ struct Session: Identifiable, Equatable {
     /// same cases as `startedAt` and also while a recording is still in
     /// progress.
     let endedAt: Date?
+    /// Token/cost record for the last transcription, or `nil` if not tracked.
+    let transcriptionUsage: PipelineUsage?
+    /// Token/cost record for the last summarization, or `nil` if not tracked.
+    let summarizationUsage: PipelineUsage?
 }
 
 /// A single meeting participant observed during a recording session.
@@ -155,6 +159,10 @@ struct SessionDetail {
     /// associated, the participants panel stayed closed, or the meeting
     /// exceeded the `maxMeetingParticipants` threshold.
     let participants: [SessionParticipant]
+    /// Token/cost record for the last transcription, or `nil` if not tracked.
+    let transcriptionUsage: PipelineUsage?
+    /// Token/cost record for the last summarization, or `nil` if not tracked.
+    let summarizationUsage: PipelineUsage?
 }
 
 // MARK: - Session Manager
@@ -233,6 +241,10 @@ enum SessionManager {
             hasSummary: hasSummary,
             startedAt: startedAt,
             endedAt: parseDate(meta["endedAt"]),
+            transcriptionUsage: (meta["transcription_meta"] as? [String: Any])
+                .flatMap(PipelineUsage.init(dict:)),
+            summarizationUsage: (meta["summarization_meta"] as? [String: Any])
+                .flatMap(PipelineUsage.init(dict:)),
         )
     }
 
@@ -255,6 +267,10 @@ enum SessionManager {
             language: meta["language"] as? String,
             detectedLanguage: meta["detected_language"] as? String,
             participants: decodeParticipants(meta["participants"]),
+            transcriptionUsage: (meta["transcription_meta"] as? [String: Any])
+                .flatMap(PipelineUsage.init(dict:)),
+            summarizationUsage: (meta["summarization_meta"] as? [String: Any])
+                .flatMap(PipelineUsage.init(dict:)),
         )
     }
 
@@ -391,6 +407,33 @@ enum SessionManager {
             data.removeValue(forKey: "detected_language")
         }
         writeMeta(dir, data)
+    }
+
+    /// Persist the per-transcription token/cost record under `transcription_meta`.
+    static func setTranscriptionUsage(_ dir: URL, _ usage: PipelineUsage) {
+        setUsage(dir, key: "transcription_meta", usage: usage)
+    }
+
+    /// Persist the per-summary token/cost record under `summarization_meta`.
+    static func setSummarizationUsage(_ dir: URL, _ usage: PipelineUsage) {
+        setUsage(dir, key: "summarization_meta", usage: usage)
+    }
+
+    private static func setUsage(_ dir: URL, key: String, usage: PipelineUsage) {
+        var data = readMeta(dir)
+        data[key] = usage.dict()
+        writeMeta(dir, data)
+    }
+
+    /// Raw audio length in seconds, used to rederive transcription cost from
+    /// the price-per-minute catalog. `nil` when no audio file is present.
+    static func audioDurationSeconds(in dir: URL) -> Double? {
+        guard let url = audioURL(in: dir),
+              let file = try? AVAudioFile(forReading: url)
+        else { return nil }
+        let sampleRate = file.fileFormat.sampleRate
+        guard sampleRate > 0 else { return nil }
+        return Double(file.length) / sampleRate
     }
 
     /// Return the language WhisperKit detected on the last `auto` transcription,
