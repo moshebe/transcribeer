@@ -14,7 +14,8 @@ gui/.build/
 # Internal dev
 .superpowers/
 .worktrees/
-docs/
+docs/*
+!docs/plans/
 test/
 .agents/
 .pi/
