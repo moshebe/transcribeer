@@ -44,12 +44,23 @@ Transcribeer captures both sides of any call, transcribes with speaker labels, a
 
 ## Install
 
-**Homebrew (recommended):**
+**Homebrew Cask (recommended):**
 
 ```bash
-brew tap moshebe/pkg
-brew install transcribeer
+brew install --cask moshebe/pkg/transcribeer
 ```
+
+This downloads the signed DMG, installs `Transcribeer.app` into `/Applications`, and handles future upgrades via `brew upgrade --cask transcribeer`.
+
+To uninstall and remove all data:
+
+```bash
+brew uninstall --zap transcribeer
+```
+
+**DMG (direct download):**
+
+Download `Transcribeer-<version>.dmg` from the [Releases](https://github.com/moshebe/transcribeer/releases) page, open it, and drag `Transcribeer.app` to `/Applications`. On first launch, right-click → Open to bypass Gatekeeper (ad-hoc signed, no Developer ID).
 
 **From source:**
 
@@ -59,17 +70,9 @@ cd transcribeer
 make dev        # builds GUI, registers as a launch agent
 ```
 
-## Running Permanently (auto-start on login)
+## Auto-start on Login
 
-```bash
-brew services start transcribeer
-```
-
-To stop auto-start:
-
-```bash
-brew services stop transcribeer
-```
+Open **System Settings → General → Login Items** and add `Transcribeer.app`, or enable it in the app's Settings panel once launched.
 
 ## First Run
 

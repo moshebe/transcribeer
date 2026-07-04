@@ -6,8 +6,6 @@ public struct ModelManifestEntry: Sendable {
     public let displayName: String
     public let sizeBytes: Int64
     /// SHA-256 hex digest of the `.tar.zst` tarball.
-    /// TODO(models-v1): replace `__PENDING__` after running scripts/publish-ivrit-coreml.sh
-    /// and uploading to the GitHub Release.
     public let sha256: String
     public let downloadURL: URL
     /// The folder name produced by whisperkit-generate-model, used as the final directory
@@ -31,43 +29,39 @@ public struct ModelManifestEntry: Sendable {
     }
 }
 
-// MARK: - Release base URL
+// MARK: - HuggingFace base URL
 
-private let modelsReleaseBase = "https://github.com/moshebe/transcribeer/releases/download/models-v1"
+private let hfRepoBase = "https://huggingface.co/datasets/moshebehf/transcribeer-coreml-models/resolve/main"
 
-private func modelReleaseURL(_ filename: String) -> URL {
-    guard let url = URL(string: "\(modelsReleaseBase)/\(filename)") else {
+private func hfModelURL(_ filename: String) -> URL {
+    guard let url = URL(string: "\(hfRepoBase)/\(filename)") else {
         // Compile-time constants — this path is unreachable in practice.
-        preconditionFailure("Invalid model release URL for \(filename)")
+        preconditionFailure("Invalid HuggingFace model URL for \(filename)")
     }
     return url
 }
 
 // MARK: - Manifest
 
-/// Compile-time manifest of ivrit.ai CoreML models hosted on GitHub Releases.
+/// Compile-time manifest of ivrit.ai CoreML models hosted on HuggingFace.
 ///
-/// URLs and SHA-256 digests are pinned at build time — the app never hits the
-/// GitHub API at runtime. Updates ship with new app versions.
-///
-/// TODO(models-v1): fill `sha256` fields after running `scripts/publish-ivrit-coreml.sh`
-/// and uploading both tarballs to the `models-v1` GitHub Release.
+/// URLs and SHA-256 digests are pinned at build time. Updates ship with new app versions.
 public enum ModelManifest {
     public static let hebrewTurbo = ModelManifestEntry(
         id: "ivrit-ai_whisper-large-v3-turbo",
         displayName: "Hebrew — turbo (ivrit.ai)",
-        sizeBytes: 1_600_000_000,
-        sha256: "__PENDING__",
-        downloadURL: modelReleaseURL("ivrit-ai_whisper-large-v3-turbo.tar.zst"),
+        sizeBytes: 1_490_000_000,
+        sha256: "b75a55d1ab5fe2db4ad2e46fc5166ab9c5fe67fe090a4fcde585bb3c0bbcb9fa",
+        downloadURL: hfModelURL("ivrit-ai_whisper-large-v3-turbo.tar.zst"),
         extractedFolderName: "ivrit-ai_whisper-large-v3-turbo"
     )
 
     public static let hebrewLarge = ModelManifestEntry(
         id: "ivrit-ai_whisper-large-v3",
         displayName: "Hebrew — large (ivrit.ai, most accurate)",
-        sizeBytes: 3_000_000_000,
-        sha256: "__PENDING__",
-        downloadURL: modelReleaseURL("ivrit-ai_whisper-large-v3.tar.zst"),
+        sizeBytes: 2_840_000_000,
+        sha256: "f263c439e700b5aee34c34d36de678e86315673cdfa5fa4b3c9e8e9dcf488c5e",
+        downloadURL: hfModelURL("ivrit-ai_whisper-large-v3.tar.zst"),
         extractedFolderName: "ivrit-ai_whisper-large-v3"
     )
 
