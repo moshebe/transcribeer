@@ -2,9 +2,13 @@ import SwiftUI
 
 struct SettingsView: View {
     @Binding var config: AppConfig
+    var transcriptionService: TranscriptionService?
+    var onboardingState: OnboardingState?
+    var applyHotkey: ((AppConfig) -> Void)?
     @State private var apiKey: String = ""
     @State private var transcriptionAPIKey: String = ""
     @State private var saveTask: Task<Void, Never>?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         TabView {
@@ -20,7 +24,8 @@ struct SettingsView: View {
                     apiKey: $transcriptionAPIKey,
                     save: save,
                     saveAPIKey: saveTranscriptionKey,
-                    reloadAPIKey: reloadTranscriptionKey
+                    reloadAPIKey: reloadTranscriptionKey,
+                    transcriptionService: transcriptionService
                 )
             }
             Tab("Summarization", systemImage: "text.badge.checkmark") {
@@ -29,8 +34,21 @@ struct SettingsView: View {
             Tab("Prompts", systemImage: "text.bubble") {
                 PromptsSettingsView()
             }
+            Tab("Hotkeys", systemImage: "keyboard") {
+                HotkeySettingsView(
+                    config: $config,
+                    save: save,
+                    applyHotkey: applyHotkey ?? { _ in }
+                )
+            }
+            Tab("Integrations", systemImage: "link") {
+                IntegrationsSettingsView(config: $config, save: save)
+            }
         }
         .frame(width: 640, height: 460)
+        .overlay(alignment: .bottomLeading) {
+            if AppBuild.isDevBuild { DevBadge() }
+        }
         .onAppear {
             apiKey = KeychainHelper.getAPIKey(backend: config.llmBackend) ?? ""
             reloadTranscriptionKey()
@@ -131,6 +149,20 @@ struct SettingsView: View {
 
             ScheduledTranscriptionSection(config: $config, save: save)
 
+            if onboardingState != nil {
+                Section {
+                    Button("Re-run setup wizard") {
+                        onboardingState?.resetForRerun()
+                        openWindow(id: "onboarding")
+                    }
+                } header: {
+                    Text("Setup Wizard")
+                } footer: {
+                    Text("Re-open the first-run setup wizard to review permissions and model downloads.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section {
                 Toggle("Enrich Zoom meetings", isOn: Binding(
                     get: { config.zoomEnricherEnabled },
@@ -160,6 +192,47 @@ struct SettingsView: View {
                     + "Participant names are only captured while you have Zoom's participants "
                     + "side panel open. Large meetings above the threshold are skipped to keep "
                     + "the session metadata focused on speakers.")
+                    .foregroundStyle(.secondary)
+            }
+
+            // MARK: Post-recording prompt (Track 4.3)
+            Section {
+                Toggle("Prompt after each recording", isOn: Binding(
+                    get: { config.promptOnStop },
+                    set: { config.promptOnStop = $0; save() }
+                ))
+            } header: {
+                Text("Post-Recording Action")
+            } footer: {
+                Text("Ask what to do after each recording instead of running the pipeline automatically.")
+                    .foregroundStyle(.secondary)
+            }
+
+            // MARK: Long-recording confirmation (Track 4.5)
+            Section {
+                Stepper(
+                    value: Binding(
+                        get: { config.longRecordingThresholdMinutes },
+                        set: { config.longRecordingThresholdMinutes = max(0, $0); save() }
+                    ),
+                    in: 0...300,
+                    step: 5
+                ) {
+                    HStack {
+                        Text("Prompt before summarizing if longer than")
+                        Spacer()
+                        Text(config.longRecordingThresholdMinutes == 0
+                             ? "never"
+                             : "\(config.longRecordingThresholdMinutes) min")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            } header: {
+                Text("Long Recording")
+            } footer: {
+                Text("Show a confirmation before summarizing recordings that exceed this length. "
+                    + "Set to 0 to always summarize without prompting.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -196,18 +269,6 @@ struct SettingsView: View {
                 authFields(for: backend)
             } header: {
                 Text("LLM Configuration")
-            }
-
-            Section {
-                Toggle("Ask for prompt profile on stop", isOn: Binding(
-                    get: { config.promptOnStop },
-                    set: { config.promptOnStop = $0; save() }
-                ))
-            } header: {
-                Text("Prompts")
-            } footer: {
-                Text("Show a profile picker when you stop a recording.")
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

@@ -45,7 +45,7 @@ DEV_VARIANT_NAME     = Transcribeer (dev)
 OBSIDIAN_VAULT ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/$(shell id -un)
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build build-dev build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture
+.PHONY: gui gui-build gui-build-release build-dev build-release build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture dmg release
 
 help:
 	@echo "dev targets:"
@@ -54,9 +54,11 @@ help:
 	@echo "  make dev-restart    restart the launch agent"
 	@echo "  make start          ensure the dev agent is loaded and running (no rebuild)"
 	@echo "  make stop           stop the running dev agent process (keeps plist)"
-	@echo "  make build-dev          build Swift GUI as .app bundle"
-	@echo "  make gui                build + launch .app bundle"
-	@echo "  make gui-build          build Swift binary only (no bundle)"
+	@echo "  make build-dev          build Swift GUI as .app bundle (with DEV badge)"
+	@echo "  make build-release      build Swift GUI as .app bundle (no DEV badge)"
+	@echo "  make gui                build + launch .app bundle (with DEV badge)"
+	@echo "  make gui-build          build Swift binary only (no bundle, with DEV badge)"
+	@echo "  make gui-build-release  build Swift binary only (no bundle, no DEV badge)"
 	@echo "  make build-dev-variant  build a side-by-side 'dev' bundle that runs alongside a main install"
 	@echo "  make gui-dev-variant    build-dev-variant + launch"
 	@echo "  make reset-mac-permissions  kill processes + reset mic/system-audio TCC entries"
@@ -69,6 +71,8 @@ help:
 	@echo "  make lint-fix       auto-fix swiftlint-correctable violations"
 	@echo "  make lint-strict    run swiftlint with --strict (warnings fail)"
 	@echo "  make verify-capture  manual real-audio pipeline check (needs built .app + TCC)"
+	@echo "  make dmg             build release .app then package as dist/Transcribeer-<version>.dmg"
+	@echo "  make release VERSION=x.y.z  tag + push; CI attaches DMG and opens Cask PR"
 
 
 # ── lint ──────────────────────────────────────────────────────────────────────
@@ -279,9 +283,15 @@ stop:
 	fi
 
 # ── Swift native GUI ──────────────────────────────────────────────────────────
+# gui-build: compile with DEV_BUILD flag (used by make dev / make gui).
+# gui-build-release: compile without DEV_BUILD flag (production binary, no badge).
 gui-build:
-	cd gui && swift build -c release -q
+	cd gui && swift build -c release -q -Xswiftc -DDEV_BUILD
 	@echo "✓ gui binary: gui/.build/release/TranscribeerApp"
+
+gui-build-release:
+	cd gui && swift build -c release -q
+	@echo "✓ gui binary (release): gui/.build/release/TranscribeerApp"
 
 # build-dev is incremental: a no-op `swift build` paired with an unsigned
 # release binary that matches APP_UNSIGNED_BACKUP byte-for-byte skips the
@@ -340,6 +350,20 @@ build-dev: gui-build
 
 gui: build-dev
 	open $(APP_BUNDLE)
+
+# build-release: compile without -DDEV_BUILD, then assemble + sign the bundle.
+# Use this when you want to run the production binary (no DEV badge).
+build-release: gui-build-release
+	@set -e; \
+	mkdir -p $(APP_MACOS) $(APP_RESOURCES); \
+	cp gui/.build/release/TranscribeerApp $(APP_MACOS)/TranscribeerApp.new; \
+	mv -f $(APP_MACOS)/TranscribeerApp.new $(APP_MACOS)/TranscribeerApp; \
+	cp gui/.build/release/TranscribeerApp $(APP_UNSIGNED_BACKUP); \
+	cmp -s gui/Info.plist $(APP_CONTENTS)/Info.plist || cp gui/Info.plist $(APP_CONTENTS)/Info.plist; \
+	codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) --options runtime $(APP_BUNDLE) 2>/dev/null || \
+	  codesign --force --deep --sign "$(EFFECTIVE_IDENTITY)" --entitlements $(APP_ENTITLEMENTS) $(APP_BUNDLE); \
+	touch $(APP_STAMP); \
+	echo "✓ app bundle (release, no DEV badge): $(APP_BUNDLE)"
 
 # ── side-by-side dev variant ──────────────────────────────────────────────────
 # Rebuilds the main bundle first (so binary + icon are fresh),
@@ -405,13 +429,22 @@ obsidian-plugin:
 	@echo "✓ Obsidian plugin installed → $(OBSIDIAN_PLUGIN_DIR)"
 	@echo "  Reload Obsidian and enable the plugin in Settings → Community plugins"
 
-.PHONY: release
-release: ## Tag a release and update the Homebrew formula SHA
-	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=0.1.0"; exit 1; fi
-	git tag -a v$(VERSION) -m "Release v$(VERSION)"
-	git archive --format=tar.gz --prefix=transcribeer-$(VERSION)/ v$(VERSION) | \
-	  shasum -a 256 | awk '{print $$1}' > /tmp/release-sha256.txt
-	@echo "SHA256: $$(cat /tmp/release-sha256.txt)"
-	@echo "Update Formula/transcribeer.rb:"
-	@echo "  url: https://github.com/$(GITHUB_USER)/transcribeer/archive/refs/tags/v$(VERSION).tar.gz"
-	@echo "  sha256: $$(cat /tmp/release-sha256.txt)"
+# ── DMG packaging ─────────────────────────────────────────────────────────────
+# Builds the release .app then calls scripts/make-dmg.sh.
+# Output: dist/Transcribeer-<version>.dmg
+dmg: build-release
+	@bash $(PROJECT_DIR)/scripts/make-dmg.sh
+
+# ── Release ───────────────────────────────────────────────────────────────────
+# Tags HEAD, pushes the tag, and lets .github/workflows/release.yml take over:
+#   - builds the release .app + DMG on macOS-latest
+#   - attaches the DMG to the GitHub Release
+#   - opens a Cask update PR against moshebe/homebrew-pkg
+#
+# Usage: make release VERSION=0.2.0
+release:
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
+	@if git tag | grep -q "^v$(VERSION)$$"; then echo "ERROR: tag v$(VERSION) already exists"; exit 1; fi
+	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	git push origin "v$(VERSION)"
+	@echo "✓ pushed tag v$(VERSION) — CI will build the DMG and open the Cask PR"

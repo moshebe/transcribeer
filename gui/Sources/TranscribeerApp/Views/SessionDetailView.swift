@@ -247,6 +247,10 @@ struct SessionDetailView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
+            if let lang = detail.detectedLanguage {
+                detectedLanguageChip(lang)
+            }
+
             if !detail.participants.isEmpty {
                 SessionParticipantsRow(participants: detail.participants)
             }
@@ -255,6 +259,39 @@ struct SessionDetailView: View {
         .padding(.horizontal, 20)
         .padding(.top, 16)
         .padding(.bottom, 12)
+    }
+
+    // MARK: - Detected language chip
+
+    private func detectedLanguageChip(_ lang: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "waveform")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            Text("Detected: \(TranscriptionLanguage.displayName(for: lang))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Menu {
+                Button("Re-transcribe as Hebrew") {
+                    onTranscribe(.init(language: TranscriptionLanguage.hebrew.rawValue, backend: nil))
+                }
+                Button("Re-transcribe as English") {
+                    onTranscribe(.init(language: TranscriptionLanguage.english.rawValue, backend: nil))
+                }
+                Button("Re-transcribe (auto-detect)") {
+                    onTranscribe(.init(language: nil, backend: nil))
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary, in: Capsule())
     }
 
     // MARK: - Tab bar
@@ -403,29 +440,6 @@ struct SessionDetailView: View {
         }
     }
 
-    /// Lines to render in the transcript tab.
-    ///
-    /// While WhisperKit is actively transcribing *this* session, show the live
-    /// segments. For dual-source transcription the speaker label is already
-    /// known (self / other); for legacy single-file it shows "…" until the
-    /// diarization pass completes.
-    private var transcriptLines: [TranscriptLine] {
-        if isTranscribingThisSession {
-            let segments = runner.transcriptionService.liveSegments
-                .sorted { $0.start < $1.start }
-            return segments.enumerated().map { idx, seg in
-                TranscriptLine(
-                    id: idx,
-                    start: seg.start,
-                    end: seg.end,
-                    speaker: seg.speaker.isEmpty ? "…" : seg.speaker,
-                    text: TranscriptFormatter.sanitize(seg.text),
-                )
-            }
-        }
-        return TranscriptFormatter.parse(detail.transcript)
-    }
-
     private var isTranscribingThisSession: Bool {
         runner.transcribingSession?.path == session.path.path
     }
@@ -474,17 +488,49 @@ struct SessionDetailView: View {
         }
     }
 
-    // MARK: - Export
+    // MARK: - Progress row
 
-    private func exportTranscript() {
+    private var showProgressRow: Bool {
+        runner.transcriptionProgress != nil
+            || runner.transcriptionService.modelState.isBusy
+    }
+}
+
+// MARK: - SessionDetailView: transcript helpers + export
+
+private extension SessionDetailView {
+    /// Lines to render in the transcript tab.
+    ///
+    /// While WhisperKit is actively transcribing *this* session, show the live
+    /// segments. For dual-source transcription the speaker label is already
+    /// known (self / other); for legacy single-file it shows "…" until the
+    /// diarization pass completes.
+    var transcriptLines: [TranscriptLine] {
+        if isTranscribingThisSession {
+            let segments = runner.transcriptionService.liveSegments
+                .sorted { $0.start < $1.start }
+            return segments.enumerated().map { idx, seg in
+                TranscriptLine(
+                    id: idx,
+                    start: seg.start,
+                    end: seg.end,
+                    speaker: seg.speaker.isEmpty ? "…" : seg.speaker,
+                    text: TranscriptFormatter.sanitize(seg.text),
+                )
+            }
+        }
+        return TranscriptFormatter.parse(detail.transcript)
+    }
+
+    func exportTranscript() {
         export(content: detail.transcript, defaultName: "transcript", ext: "txt")
     }
 
-    private func exportSummary() {
+    func exportSummary() {
         export(content: detail.summary, defaultName: "summary", ext: "md")
     }
 
-    private func export(content: String, defaultName: String, ext: String) {
+    func export(content: String, defaultName: String, ext: String) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "\(detail.name.isEmpty ? defaultName : detail.name).\(ext)"
         panel.canCreateDirectories = true
@@ -495,13 +541,6 @@ struct SessionDetailView: View {
         } catch {
             statusText = "Export failed: \(error.localizedDescription)"
         }
-    }
-
-    // MARK: - Progress row
-
-    private var showProgressRow: Bool {
-        runner.transcriptionProgress != nil
-            || runner.transcriptionService.modelState.isBusy
     }
 }
 

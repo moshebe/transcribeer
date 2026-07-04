@@ -17,6 +17,16 @@ struct SettingsBadgeStyle: ViewModifier {
     }
 }
 
+/// Orange "DEV" lozenge shown in Settings and the History toolbar when running
+/// a dev build (`make dev` / bundle ID ending in `.dev`).
+struct DevBadge: View {
+    var body: some View {
+        Text("DEV")
+            .modifier(SettingsBadgeStyle(tint: .orange, font: .caption.weight(.semibold)))
+            .help("Running a local dev build")
+    }
+}
+
 /// Status icon used by every Summarization / Transcription status row.
 /// Centralising the icon/colour mapping keeps status views visually
 /// consistent and ensures every icon carries an explicit accessibility label.

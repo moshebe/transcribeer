@@ -116,6 +116,7 @@ enum RecordingIndicatorRenderer {
         switch state {
         case .idle, .recording: "mic"
         case .transcribing, .summarizing: "ellipsis.circle"
+        case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation: "questionmark.circle"
         case .done: "checkmark.circle"
         case .error: "exclamationmark.triangle"
         }

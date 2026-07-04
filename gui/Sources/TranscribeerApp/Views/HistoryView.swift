@@ -51,14 +51,13 @@ struct HistoryView: View {
         } detail: {
             VStack(spacing: 0) {
                 accessibilityBanner
-                controlBar
-                Divider()
                 detailPanel
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 800, minHeight: 500)
+        .toolbar { toolbarItems }
         .onAppear {
             refresh()
             profiles = PromptProfileManager.listProfiles()
@@ -118,14 +117,74 @@ struct HistoryView: View {
         loadDetail(sessionID: current)
     }
 
-    // MARK: - Control bar
+    // MARK: - Toolbar
     //
-    // Surfaces the record/stop/cancel controls inside the window, so users
-    // without the menubar icon visible (e.g. when other menu-bar extras push
-    // ours behind the notch on MacBook Pros) still have a first-class way to
-    // drive the pipeline. The menubar dropdown keeps working exactly as
-    // before; this is an additive surface for the same `PipelineRunner`
+    // Surfaces the record/stop/cancel controls in the window toolbar so they
+    // are always visible regardless of which session (if any) is selected.
+    // Users without the menubar icon visible (e.g. when other menu-bar extras
+    // push ours behind the notch on MacBook Pros) still have a first-class
+    // way to drive the pipeline. The menubar dropdown keeps working exactly
+    // as before; this is an additive surface for the same `PipelineRunner`
     // state machine.
+
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        if AppBuild.isDevBuild {
+            ToolbarItem(placement: .navigation) {
+                DevBadge()
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            primaryActionButton
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            importButton
+            settingsButton
+        }
+        ToolbarItem(placement: .status) {
+            toolbarStateLabel
+        }
+    }
+
+    /// Compact single-line state label for the toolbar.
+    /// The full `stateIndicator` with multi-line VStack is too tall for a
+    /// toolbar item — this surfaces just the essential status text.
+    @ViewBuilder
+    private var toolbarStateLabel: some View {
+        switch runner.state {
+        case .idle:
+            EmptyView()
+        case .recording(let startTime):
+            TimelineView(.periodic(from: startTime, by: 1)) { context in
+                let elapsed = Int(context.date.timeIntervalSince(startTime))
+                Label(
+                    "Recording  \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))",
+                    systemImage: "record.circle.fill",
+                )
+                .foregroundStyle(.red)
+            }
+        case .transcribing:
+            if let pct = runner.transcriptionProgress {
+                Label("Transcribing  \(Int(pct * 100))%", systemImage: "waveform")
+            } else {
+                Label("Transcribing…", systemImage: "waveform")
+            }
+        case .summarizing:
+            Label("Summarizing…", systemImage: "sparkles")
+        case .done:
+            Label("Done", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .awaitingPostRecordingChoice:
+            Label("Choose action…", systemImage: "questionmark.circle")
+        case .awaitingLongRecordingConfirmation:
+            Label("Confirm summarization…", systemImage: "questionmark.circle")
+        case .error(let msg):
+            Label(msg, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+                .help(msg)
+        }
+    }
 
     @ViewBuilder
     private var accessibilityBanner: some View {
@@ -155,19 +214,6 @@ struct HistoryView: View {
         }
     }
 
-    private var controlBar: some View {
-        HStack(spacing: 12) {
-            stateIndicator
-            Spacer()
-            importButton
-            settingsButton
-            primaryActionButton
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.regularMaterial)
-    }
-
     /// Tray-icon next to the primary action — lets users import an existing
     /// audio file (Voice Memos export, Zoom recording, WhatsApp .m4a, anything
     /// AVFoundation can decode) as a new session so they can transcribe it
@@ -177,10 +223,7 @@ struct HistoryView: View {
             importAudioFile()
         } label: {
             Image(systemName: "square.and.arrow.down")
-                .font(.system(size: 16))
         }
-        .buttonStyle(.borderless)
-        .controlSize(.large)
         .help("Import audio file…")
         .accessibilityLabel("Import audio file")
         .keyboardShortcut("i", modifiers: .command)
@@ -196,10 +239,7 @@ struct HistoryView: View {
             openSettingsEnv()
         } label: {
             Image(systemName: "gearshape")
-                .font(.system(size: 16))
         }
-        .buttonStyle(.borderless)
-        .controlSize(.large)
         .help("Settings (⌘,)")
         .accessibilityLabel("Settings")
         .keyboardShortcut(",", modifiers: .command)
@@ -313,60 +353,6 @@ struct HistoryView: View {
     }
 
     @ViewBuilder
-    private var stateIndicator: some View {
-        switch runner.state {
-        case .idle:
-            Label("Ready to record", systemImage: "mic")
-                .foregroundStyle(.secondary)
-        case .recording(let startTime):
-            VStack(alignment: .leading, spacing: 2) {
-                TimelineView(.periodic(from: startTime, by: 1)) { context in
-                    let elapsed = Int(context.date.timeIntervalSince(startTime))
-                    Label(
-                        "Recording  \(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))",
-                        systemImage: "record.circle.fill",
-                    )
-                    .foregroundStyle(.red)
-                }
-                if let title = runner.liveMeetingTitle {
-                    Label(title, systemImage: "video.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                let names = runner.participantsWatcher.snapshot?
-                    .participants
-                    .map(\.displayName)
-                    .filter { !$0.isEmpty } ?? []
-                if !names.isEmpty {
-                    Label(names.joined(separator: ", "), systemImage: "person.2.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .help(names.joined(separator: "\n"))
-                }
-            }
-        case .transcribing:
-            if let pct = runner.transcriptionProgress {
-                Label("Transcribing  \(Int(pct * 100))%", systemImage: "waveform")
-            } else {
-                Label("Transcribing…", systemImage: "waveform")
-            }
-        case .summarizing:
-            Label("Summarizing…", systemImage: "sparkles")
-        case .done:
-            Label("Done", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        case .error(let msg):
-            Label(msg, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .lineLimit(1)
-                .help(msg)
-        }
-    }
-
-    @ViewBuilder
     private var primaryActionButton: some View {
         switch runner.state {
         case .idle, .done, .error:
@@ -400,6 +386,8 @@ struct HistoryView: View {
             .controlSize(.large)
             .keyboardShortcut(".", modifiers: .command)
             .help("Cancel (⌘.)")
+        case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation:
+            EmptyView()
         }
     }
 
@@ -562,11 +550,17 @@ struct HistoryView: View {
                 systemImage: "checkmark.circle",
                 description: Text("Press Delete to move all selected recordings to the Trash.")
             )
+        } else if sessions.isEmpty {
+            ContentUnavailableView(
+                "No Recordings Yet",
+                systemImage: "mic",
+                description: Text("Press Record to start your first session.")
+            )
         } else {
             ContentUnavailableView(
-                "Select a Recording",
+                "No Recording Selected",
                 systemImage: "waveform",
-                description: Text("Choose a session from the sidebar to view details.")
+                description: Text("Choose a session from the sidebar, or press Record to start a new one.")
             )
         }
     }
@@ -593,15 +587,11 @@ struct HistoryView: View {
 
     private func refresh() {
         sessions = SessionManager.listSessions(sessionsDir: config.expandedSessionsDir)
-        if selectedSessionIDs.isEmpty, let first = sessions.first {
-            selectedSessionIDs = [first.id]
-        } else {
-            // Drop selections for sessions that no longer exist (e.g. deleted
-            // from disk) so the detail pane doesn't show stale rows.
-            let existing = Set(sessions.map(\.id))
-            let pruned = selectedSessionIDs.intersection(existing)
-            if pruned != selectedSessionIDs { selectedSessionIDs = pruned }
-        }
+        // Drop selections for sessions that no longer exist (e.g. deleted
+        // from disk) so the detail pane doesn't show stale rows.
+        let existing = Set(sessions.map(\.id))
+        let pruned = selectedSessionIDs.intersection(existing)
+        if pruned != selectedSessionIDs { selectedSessionIDs = pruned }
     }
 
     private func loadDetail(sessionID: String?) {

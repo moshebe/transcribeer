@@ -64,6 +64,20 @@ final class TranscriptionService {
     /// Current state of the loaded model.
     var modelState: ModelState = .unloaded
 
+    /// Language WhisperKit detected during the most recent `auto` transcription.
+    /// `nil` when the last transcription used an explicit language code, or when
+    /// no transcription has run yet. Cleared at the start of each new transcription.
+    private(set) var lastDetectedLanguage: String?
+
+    /// Non-nil when the last `loadModel` call found insufficient RAM.
+    /// Cleared when a new `loadModel` call begins.
+    var ramWarning: RAMWarning?
+
+    struct RAMWarning: Sendable {
+        let available: Int64
+        let required: Int64
+    }
+
     /// Segments discovered so far in the running transcription. Cleared at the
     /// start of every `transcribe(...)` call. Drives the live preview in the
     /// transcript tab while WhisperKit is still decoding. Unlike `progress`,
@@ -76,8 +90,16 @@ final class TranscriptionService {
 
     /// The currently running transcription. Stored so the caller can cancel it.
     private var activeTask: Task<[TranscriptSegment], Error>?
-    private var dualTask: Task<[TranscribeerCore.LabeledSegment], Error>?
+    private var dualTask: Task<DualSourceTranscriber.TranscriptionOutput, Error>?
     private var cloudTask: Task<[LabeledSegment], Error>?
+
+    /// Idle-unload timer. Cancelled at the start of every transcription and
+    /// rearmed at the end of every successful transcription.
+    private var idleUnloadTimer: Task<Void, Never>?
+
+    /// Optional resource governor injected at app-root level. When nil,
+    /// `TranscriptionBudget.standard` is used as a fallback.
+    var resourceGovernor: ResourceGovernor?
 
     private static let modelsDir: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -93,6 +115,8 @@ final class TranscriptionService {
         textDecoderCompute: .cpuAndNeuralEngine,
         prefillCompute: .cpuOnly
     )
+
+    // MARK: - Model loading
 
     /// Load (and download if needed) a WhisperKit model.
     ///
@@ -115,6 +139,18 @@ final class TranscriptionService {
 
         let canonical = AppConfig.canonicalWhisperModel(name)
         let cachedFolder = Self.cachedModelFolder(variant: canonical, downloadBase: downloadBase, repo: modelRepo)
+
+        // RAM pre-flight: warn when available memory is less than 1.5× the model's
+        // expected footprint. Loading continues regardless — the warning surfaces in
+        // the UI so the user can switch models if they want to.
+        ramWarning = nil
+        if let expected = ModelCatalogService.expectedRAMBytes(for: canonical) {
+            let available = Self.availablePhysicalMemory()
+            let threshold = Int64(Double(expected) * 1.5)
+            if available > 0, available < threshold {
+                ramWarning = RAMWarning(available: available, required: expected)
+            }
+        }
 
         // If the model is already on disk, skip the download branch entirely and
         // start from the load state. Otherwise WhisperKit would still hit the network
@@ -236,10 +272,14 @@ final class TranscriptionService {
         config: AppConfig,
         timing: DualSourceTranscriber.TimingInfo
     ) async throws -> String {
+        disarmIdleTimer()
+
+        let effective = effectiveModel(for: config)
+
         var coreCfg = TranscribeerCore.AppConfig()
         coreCfg.language = config.language
-        coreCfg.whisperModel = config.whisperModel
-        coreCfg.whisperModelRepo = config.whisperModelRepo
+        coreCfg.whisperModel = effective.name
+        coreCfg.whisperModelRepo = effective.repo ?? ""
         coreCfg.diarization = config.diarization
         coreCfg.numSpeakers = config.numSpeakers
         coreCfg.audio.selfLabel = config.audio.selfLabel
@@ -249,6 +289,7 @@ final class TranscriptionService {
         micProgress = 0
         sysProgress = 0
         liveSegments = []
+        lastDetectedLanguage = nil
 
         let onMicProgress: @Sendable (Double) -> Void = { value in
             Task { @MainActor in self.applyMicProgress(value) }
@@ -256,7 +297,8 @@ final class TranscriptionService {
         let onSysProgress: @Sendable (Double) -> Void = { value in
             Task { @MainActor in self.applySysProgress(value) }
         }
-        let task = Task.detached(priority: .userInitiated) { () -> [TranscribeerCore.LabeledSegment] in
+        let task = Task.detached(priority: .userInitiated) {
+            () -> DualSourceTranscriber.TranscriptionOutput in
             try Task.checkCancellation()
             return try await DualSourceTranscriber.transcribe(
                 session: session,
@@ -275,13 +317,18 @@ final class TranscriptionService {
             dualTask = nil
         }
 
-        let segments = try await withTaskCancellationHandler {
+        let output = try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
             task.cancel()
         }
 
-        let appSegments = segments.map(Self.toLabeledSegment)
+        // Persist detected language when the run was in auto mode.
+        if config.language == "auto", let detected = output.detectedLanguage, !detected.isEmpty {
+            lastDetectedLanguage = detected
+        }
+
+        let appSegments = output.segments.map(Self.toLabeledSegment)
         liveSegments = appSegments.map(Self.toLiveSegment)
         return TranscriptFormatter.formatDual(appSegments)
     }
@@ -298,6 +345,8 @@ final class TranscriptionService {
         timing: DualSourceTranscriber.TimingInfo,
         backend: TranscriptionBackend
     ) async throws -> String {
+        disarmIdleTimer()
+
         let micURL = session.appendingPathComponent("audio.mic.caf")
         let sysURL = session.appendingPathComponent("audio.sys.caf")
         let mixedURL = session.appendingPathComponent("audio.m4a")
@@ -369,52 +418,8 @@ final class TranscriptionService {
         }
 
         liveSegments = appSegments.map(Self.toLiveSegment)
+        armIdleTimer(minutes: config.idleUnloadMinutes)
         return TranscriptFormatter.formatDual(appSegments)
-    }
-
-    /// Map a Core segment to the App-layer labelled segment used by the
-    /// transcript formatter.
-    private static func toLabeledSegment(_ seg: TranscribeerCore.LabeledSegment) -> LabeledSegment {
-        LabeledSegment(start: seg.start, end: seg.end, speaker: seg.speaker, text: seg.text)
-    }
-
-    /// Map a labelled segment to the live-preview type rendered in the UI.
-    private static func toLiveSegment(_ seg: LabeledSegment) -> TranscriptSegment {
-        TranscriptSegment(start: seg.start, end: seg.end, text: seg.text, speaker: seg.speaker)
-    }
-
-    private func applyMicProgress(_ value: Double) {
-        guard micProgress != value else { return }
-        micProgress = value
-        updateCombinedProgress()
-    }
-
-    private func applySysProgress(_ value: Double) {
-        guard sysProgress != value else { return }
-        sysProgress = value
-        updateCombinedProgress()
-    }
-
-    /// Snapshot-aware variants used by the cloud path. Store the snapshot
-    /// (drives `transcriptionPhase`) and pipe the fraction into the
-    /// existing per-source progress state so the bar keeps working.
-    private func applyMicSnapshot(_ snapshot: CloudProgressTracker.Snapshot) {
-        micSnapshot = snapshot
-        applyMicProgress(snapshot.fraction)
-    }
-
-    private func applySysSnapshot(_ snapshot: CloudProgressTracker.Snapshot) {
-        sysSnapshot = snapshot
-        applySysProgress(snapshot.fraction)
-    }
-
-    private func updateCombinedProgress() {
-        switch (micProgress, sysProgress) {
-        case (nil, nil):                   progress = nil
-        case let (mic?, nil):              progress = mic
-        case let (nil, sys?):              progress = sys
-        case let (mic?, sys?):             progress = (mic + sys) / 2
-        }
     }
 
     /// Transcribe an audio file to timestamped segments.
@@ -431,6 +436,8 @@ final class TranscriptionService {
         audioURL: URL,
         language: String = "auto"
     ) async throws -> [TranscriptSegment] {
+        disarmIdleTimer()
+
         if whisperKit == nil || modelState != .loaded {
             try await loadModel()
         }
@@ -517,11 +524,13 @@ final class TranscriptionService {
         }
         activeTask = task
 
-        return try await withTaskCancellationHandler {
+        let segments = try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
             task.cancel()
         }
+        armIdleTimer(minutes: 10) // default; no config available in this path
+        return segments
     }
 
     /// Cancel any in-flight transcription. The returned task will throw
@@ -534,6 +543,7 @@ final class TranscriptionService {
 
     /// Unload the current model and free memory.
     func unloadModel() async {
+        disarmIdleTimer()
         if let kit = whisperKit {
             whisperKit = nil
             await kit.unloadModels()
@@ -548,6 +558,133 @@ final class TranscriptionService {
         sysSnapshot = nil
         cloudBackendName = nil
         liveSegments = []
+    }
+}
+
+// MARK: - Segment mapping + progress helpers
+
+@MainActor
+extension TranscriptionService {
+    static func toLabeledSegment(_ seg: TranscribeerCore.LabeledSegment) -> LabeledSegment {
+        LabeledSegment(start: seg.start, end: seg.end, speaker: seg.speaker, text: seg.text)
+    }
+
+    static func toLiveSegment(_ seg: LabeledSegment) -> TranscriptSegment {
+        TranscriptSegment(start: seg.start, end: seg.end, text: seg.text, speaker: seg.speaker)
+    }
+
+    func applyMicProgress(_ value: Double) {
+        guard micProgress != value else { return }
+        micProgress = value
+        updateCombinedProgress()
+    }
+
+    func applySysProgress(_ value: Double) {
+        guard sysProgress != value else { return }
+        sysProgress = value
+        updateCombinedProgress()
+    }
+
+    func applyMicSnapshot(_ snapshot: CloudProgressTracker.Snapshot) {
+        micSnapshot = snapshot
+        applyMicProgress(snapshot.fraction)
+    }
+
+    func applySysSnapshot(_ snapshot: CloudProgressTracker.Snapshot) {
+        sysSnapshot = snapshot
+        applySysProgress(snapshot.fraction)
+    }
+
+    func updateCombinedProgress() {
+        switch (micProgress, sysProgress) {
+        case (nil, nil):                   progress = nil
+        case let (mic?, nil):              progress = mic
+        case let (nil, sys?):              progress = sys
+        case let (mic?, sys?):             progress = (mic + sys) / 2
+        }
+    }
+}
+
+// MARK: - Language routing
+
+@MainActor
+extension TranscriptionService {
+    /// Compute the effective (model name, repo) pair for the given config.
+    ///
+    /// Language-specific routing takes priority over the general `whisperModel`
+    /// setting so that a Hebrew recording always uses the ivrit.ai CoreML model
+    /// regardless of what the generic picker shows.
+    ///
+    /// - `"he"` → `config.hebrewWhisperModel` / `config.hebrewWhisperModelRepo`
+    /// - `"en"` → `config.englishWhisperModel` / `config.englishWhisperModelRepo`
+    /// - anything else (including `"auto"`) → `config.whisperModel` / `config.whisperModelRepo`
+    ///
+    /// An empty repo string resolves to `nil` (use the default HF repo or local cache).
+    func effectiveModel(for config: AppConfig) -> (name: String, repo: String?) {
+        switch config.language {
+        case "he":
+            let repo = config.hebrewWhisperModelRepo.isEmpty ? nil : config.hebrewWhisperModelRepo
+            return (config.hebrewWhisperModel, repo)
+        case "en":
+            let repo = config.englishWhisperModelRepo.isEmpty ? nil : config.englishWhisperModelRepo
+            return (config.englishWhisperModel, repo)
+        default:
+            // "auto" or any unlisted language: use the general model setting
+            let repo = config.whisperModelRepo.isEmpty ? nil : config.whisperModelRepo
+            return (config.whisperModel, repo)
+        }
+    }
+}
+
+// MARK: - Idle unload timer
+
+@MainActor
+extension TranscriptionService {
+    /// Arm an idle-unload countdown. Any previous timer is cancelled first.
+    /// Passing `minutes == 0` disables the feature for this call.
+    func armIdleTimer(minutes: Int) {
+        idleUnloadTimer?.cancel()
+        idleUnloadTimer = nil
+        guard minutes > 0 else { return }
+        idleUnloadTimer = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(minutes * 60))
+            } catch {
+                return // cancelled
+            }
+            guard !Task.isCancelled else { return }
+            Task { @MainActor [weak self] in
+                await self?.unloadModel()
+            }
+        }
+    }
+
+    /// Cancel the pending idle-unload timer.
+    func disarmIdleTimer() {
+        idleUnloadTimer?.cancel()
+        idleUnloadTimer = nil
+    }
+}
+
+// MARK: - System memory helpers
+
+extension TranscriptionService {
+    /// Returns the number of bytes available for new allocations as reported by
+    /// the kernel's VM statistics. Returns 0 when the query fails (the caller
+    /// treats 0 as "unknown" and skips the pre-flight warning).
+    static func availablePhysicalMemory() -> Int64 {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size
+        )
+        let result = withUnsafeMutablePointer(to: &stats) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        let pageSize = Int64(vm_kernel_page_size)
+        return (Int64(stats.free_count) + Int64(stats.inactive_count)) * pageSize
     }
 }
 

@@ -14,6 +14,9 @@ struct Session: Identifiable, Equatable {
     /// Raw language code stored in `meta.json` (e.g. `"en"`, `"he"`, `"auto"`).
     /// `nil` when the session hasn't been transcribed yet.
     let language: String?
+    /// Language WhisperKit auto-detected on the last `auto` transcription.
+    /// `nil` when transcribed with an explicit language or not yet transcribed.
+    let detectedLanguage: String?
     /// Pipeline artifacts present on disk. Drives the sidebar status icons.
     let hasAudio: Bool
     let hasTranscript: Bool
@@ -144,6 +147,9 @@ struct SessionDetail {
     let audioURL: URL?
     /// Per-session language override, or `nil` to fall back to the global default.
     let language: String?
+    /// Language WhisperKit auto-detected on the last `auto` transcription.
+    /// `nil` when transcribed with an explicit language or not yet transcribed.
+    let detectedLanguage: String?
     /// Meeting participants observed while this session was being recorded,
     /// in the order they were first seen. Empty when no Zoom meeting was
     /// associated, the participants panel stayed closed, or the meeting
@@ -221,6 +227,7 @@ enum SessionManager {
             duration: audioDuration(dir),
             snippet: snippet(dir),
             language: meta["language"] as? String,
+            detectedLanguage: meta["detected_language"] as? String,
             hasAudio: audioURL(in: dir) != nil,
             hasTranscript: hasTranscript,
             hasSummary: hasSummary,
@@ -246,6 +253,7 @@ enum SessionManager {
             canSummarize: FileManager.default.fileExists(atPath: txPath.path),
             audioURL: audio,
             language: meta["language"] as? String,
+            detectedLanguage: meta["detected_language"] as? String,
             participants: decodeParticipants(meta["participants"]),
         )
     }
@@ -370,6 +378,26 @@ enum SessionManager {
             data.removeValue(forKey: "language")
         }
         writeMeta(dir, data)
+    }
+
+    /// Persist the language WhisperKit detected during an `auto` transcription.
+    /// Only called when `config.language == "auto"` and detection succeeded.
+    /// Pass `nil` to remove a previously stored value (e.g. after manual override).
+    static func setDetectedLanguage(_ dir: URL, _ language: String?) {
+        var data = readMeta(dir)
+        if let language, !language.isEmpty {
+            data["detected_language"] = language
+        } else {
+            data.removeValue(forKey: "detected_language")
+        }
+        writeMeta(dir, data)
+    }
+
+    /// Return the language WhisperKit detected on the last `auto` transcription,
+    /// or `nil` when the session was transcribed with an explicit language or
+    /// hasn't been transcribed yet.
+    static func detectedLanguage(for dir: URL) -> String? {
+        readMeta(dir)["detected_language"] as? String
     }
 
     static func displayName(_ dir: URL) -> String {

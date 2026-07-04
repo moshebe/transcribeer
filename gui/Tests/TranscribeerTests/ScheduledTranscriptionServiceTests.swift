@@ -109,6 +109,7 @@ struct ScheduledTranscriptionServiceTests {
             duration: "",
             snippet: "",
             language: nil,
+            detectedLanguage: nil,
             hasAudio: hasAudio,
             hasTranscript: hasTranscript,
             hasSummary: hasSummary,
