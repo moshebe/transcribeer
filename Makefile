@@ -45,7 +45,7 @@ DEV_VARIANT_NAME     = Transcribeer (dev)
 OBSIDIAN_VAULT ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/$(shell id -un)
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build gui-build-release build-dev build-release build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture
+.PHONY: gui gui-build gui-build-release build-dev build-release build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture dmg release
 
 help:
 	@echo "dev targets:"
@@ -71,6 +71,8 @@ help:
 	@echo "  make lint-fix       auto-fix swiftlint-correctable violations"
 	@echo "  make lint-strict    run swiftlint with --strict (warnings fail)"
 	@echo "  make verify-capture  manual real-audio pipeline check (needs built .app + TCC)"
+	@echo "  make dmg             build release .app then package as dist/Transcribeer-<version>.dmg"
+	@echo "  make release VERSION=x.y.z  tag + push; CI attaches DMG and opens Cask PR"
 
 
 # ── lint ──────────────────────────────────────────────────────────────────────
@@ -427,13 +429,22 @@ obsidian-plugin:
 	@echo "✓ Obsidian plugin installed → $(OBSIDIAN_PLUGIN_DIR)"
 	@echo "  Reload Obsidian and enable the plugin in Settings → Community plugins"
 
-.PHONY: release
-release: ## Tag a release and update the Homebrew formula SHA
-	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=0.1.0"; exit 1; fi
-	git tag -a v$(VERSION) -m "Release v$(VERSION)"
-	git archive --format=tar.gz --prefix=transcribeer-$(VERSION)/ v$(VERSION) | \
-	  shasum -a 256 | awk '{print $$1}' > /tmp/release-sha256.txt
-	@echo "SHA256: $$(cat /tmp/release-sha256.txt)"
-	@echo "Update Formula/transcribeer.rb:"
-	@echo "  url: https://github.com/$(GITHUB_USER)/transcribeer/archive/refs/tags/v$(VERSION).tar.gz"
-	@echo "  sha256: $$(cat /tmp/release-sha256.txt)"
+# ── DMG packaging ─────────────────────────────────────────────────────────────
+# Builds the release .app then calls scripts/make-dmg.sh.
+# Output: dist/Transcribeer-<version>.dmg
+dmg: build-release
+	@bash $(PROJECT_DIR)/scripts/make-dmg.sh
+
+# ── Release ───────────────────────────────────────────────────────────────────
+# Tags HEAD, pushes the tag, and lets .github/workflows/release.yml take over:
+#   - builds the release .app + DMG on macOS-latest
+#   - attaches the DMG to the GitHub Release
+#   - opens a Cask update PR against moshebe/homebrew-pkg
+#
+# Usage: make release VERSION=0.2.0
+release:
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=x.y.z"; exit 1; fi
+	@if git tag | grep -q "^v$(VERSION)$$"; then echo "ERROR: tag v$(VERSION) already exists"; exit 1; fi
+	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	git push origin "v$(VERSION)"
+	@echo "✓ pushed tag v$(VERSION) — CI will build the DMG and open the Cask PR"

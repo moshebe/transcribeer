@@ -43,6 +43,7 @@ struct SessionGrouperTests {
             duration: "",
             snippet: "",
             language: nil,
+            detectedLanguage: nil,
             hasAudio: false,
             hasTranscript: false,
             hasSummary: false,

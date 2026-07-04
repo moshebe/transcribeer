@@ -54,6 +54,7 @@ struct SessionRenameEqualityTests {
             duration: duration,
             snippet: "",
             language: nil,
+            detectedLanguage: nil,
             hasAudio: true,
             hasTranscript: false,
             hasSummary: false,

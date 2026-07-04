@@ -232,9 +232,9 @@ struct DualSourceTranscriberTests {
             progress: .init(mic: nil, sys: nil)
         )
         #expect(calledURL == micURL)
-        #expect(result.count == 2)
-        #expect(result[0].speaker == "Speaker 1")
-        #expect(result[1].speaker == "Speaker 2")
+        #expect(result.segments.count == 2)
+        #expect(result.segments[0].speaker == "Speaker 1")
+        #expect(result.segments[1].speaker == "Speaker 2")
 
         // 3. Interleave with sys — diarized mic + sys together.
         DualSourceTranscriber.diarizeFunc = { _, _ in
@@ -254,10 +254,10 @@ struct DualSourceTranscriberTests {
             cfg: cfg,
             progress: .init(mic: nil, sys: nil)
         )
-        #expect(interleaved.count == 2)
-        #expect(interleaved[0].speaker == "Alice")
-        #expect(interleaved[0].text == "hello")
-        #expect(interleaved[1].speaker == "Them")
-        #expect(interleaved[1].text == "hi")
+        #expect(interleaved.segments.count == 2)
+        #expect(interleaved.segments[0].speaker == "Alice")
+        #expect(interleaved.segments[0].text == "hello")
+        #expect(interleaved.segments[1].speaker == "Them")
+        #expect(interleaved.segments[1].text == "hi")
     }
 }

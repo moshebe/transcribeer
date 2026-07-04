@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import os.log
 import TranscribeerCore
@@ -85,9 +86,24 @@ final class PipelineRunner {
     /// that land mid-call.
     private(set) var liveMeetingTitle: String?
 
+    // MARK: - Track 4.3: Post-recording prompt
+
+    /// Non-nil while waiting for the user to pick a post-recording action.
+    /// The sheet observes this alongside `state == .awaitingPostRecordingChoice`.
+    private(set) var postRecordingSessionName: String?
+    /// Duration of the captured audio, set alongside `awaitingPostRecordingChoice`.
+    private(set) var postRecordingDuration: TimeInterval = 0
+    @ObservationIgnored private var postRecordingContinuation: CheckedContinuation<PostRecordingChoice, Never>?
+
+    // MARK: - Track 4.5: Long-recording confirmation
+
+    /// Non-nil while waiting for the user to confirm summarization of a long recording.
+    private(set) var pendingLongRecordingDuration: TimeInterval?
+    @ObservationIgnored private var longRecordingContinuation: CheckedContinuation<Bool, Never>?
+
     private var pipelineTask: Task<Void, Never>?
     private var processingTask: Task<Void, Never>?
-    private var summarizeTask: Task<CLIResult, Never>?
+    var summarizeTask: Task<CLIResult, Never>?
     /// Active participants recorder for the current session, `nil` when idle.
     private var participantsRecorder: SessionParticipantsRecorder?
     private var titlePollTask: Task<Void, Never>?
@@ -199,6 +215,10 @@ final class PipelineRunner {
             pipelineTask?.cancel()
             summarizeTask?.cancel()
             summarizeTask = nil
+        case .awaitingPostRecordingChoice:
+            resolvePostRecordingChoice(.saveOnly)
+        case .awaitingLongRecordingConfirmation:
+            confirmLongRecording(false)
         default:
             break
         }
@@ -257,8 +277,20 @@ final class PipelineRunner {
         }
 
         if config.pipelineMode == "record-only" {
-            finishSession(session)
+            finishSession(session, config: config)
             return
+        }
+
+        // Track 4.3 — prompt-on-stop: ask user what to do before running pipeline.
+        // Returns false when the choice handled the pipeline end (discard/save/transcribe-only).
+        if config.promptOnStop {
+            let shouldContinue = await handlePostRecordingPrompt(
+                session: session,
+                transcriptPath: transcriptPath,
+                config: config,
+                logger: logger
+            )
+            guard shouldContinue else { return }
         }
 
         // 2. Transcribe (WhisperKit + SpeakerKit)
@@ -270,7 +302,7 @@ final class PipelineRunner {
         ) else { return }
 
         if config.pipelineMode == "record+transcribe" {
-            finishSession(session)
+            finishSession(session, config: config)
             return
         }
 
@@ -279,11 +311,88 @@ final class PipelineRunner {
             config: config,
             transcriptPath: transcriptPath,
             summaryPath: summaryPath,
+            session: session,
             logger: logger
         )
 
-        finishSession(session)
+        finishSession(session, config: config)
     }
+
+    // MARK: - Track 4.3 post-recording prompt
+
+    /// Suspends the pipeline until the user picks an action.
+    /// Returns `true` if the pipeline should proceed to transcription+summarization,
+    /// `false` if the choice already terminated the pipeline (discard/save/transcribe-only).
+    private func handlePostRecordingPrompt(
+        session: URL,
+        transcriptPath: URL,
+        config: AppConfig,
+        logger: SessionLogger
+    ) async -> Bool {
+        let name = SessionManager.displayName(session)
+        let audioURL = session.appendingPathComponent("audio.m4a")
+        let duration: TimeInterval
+        if let asset = try? await AVURLAsset(url: audioURL).load(.duration) {
+            duration = asset.seconds
+        } else {
+            duration = 0
+        }
+
+        let choice = await withCheckedContinuation { (cont: CheckedContinuation<PostRecordingChoice, Never>) in
+            postRecordingContinuation = cont
+            postRecordingSessionName = name
+            postRecordingDuration = duration
+            state = .awaitingPostRecordingChoice
+        }
+
+        postRecordingSessionName = nil
+        postRecordingDuration = 0
+
+        switch choice {
+        case .discard:
+            logger.log("post-recording: discard")
+            stopParticipantsCapture()
+            try? FileManager.default.removeItem(at: session)
+            state = .idle
+            return false
+        case .saveOnly:
+            logger.log("post-recording: save-only")
+            finishSession(session, config: config)
+            return false
+        case .transcribeOnly:
+            logger.log("post-recording: transcribe-only")
+            guard await performTranscription(
+                config: config,
+                session: session,
+                transcriptPath: transcriptPath,
+                logger: logger
+            ) else { return false }
+            finishSession(session, config: config)
+            return false
+        case .transcribeAndSummarize:
+            logger.log("post-recording: transcribe-and-summarize")
+            return true
+        }
+    }
+
+    // MARK: - Track 4.3 resolution
+
+    /// Called from the PostRecordingSheet to resolve the awaited continuation.
+    func resolvePostRecordingChoice(_ choice: PostRecordingChoice) {
+        postRecordingContinuation?.resume(returning: choice)
+        postRecordingContinuation = nil
+    }
+
+    // MARK: - Track 4.5 resolution
+
+    /// Called from the LongRecordingConfirmationSheet to resolve the awaited continuation.
+    func confirmLongRecording(_ shouldSummarize: Bool) {
+        pendingLongRecordingDuration = nil
+        longRecordingContinuation?.resume(returning: shouldSummarize)
+        longRecordingContinuation = nil
+    }
+
+    // MARK: - Failure reporting
 
     /// Log a failure message, flip state to `.error`, and post a user notification.
     private func reportFailure(_ logMessage: String, userFacing: String, logger: SessionLogger) {
@@ -310,6 +419,9 @@ final class PipelineRunner {
             )
             try result.write(to: transcriptPath, atomically: true, encoding: .utf8)
             SessionManager.setLanguage(session, config.language)
+            if let detected = transcriptionService.lastDetectedLanguage {
+                SessionManager.setDetectedLanguage(session, detected)
+            }
             logger.log("transcription done")
             return true
         } catch is CancellationError {
@@ -330,8 +442,30 @@ final class PipelineRunner {
         config: AppConfig,
         transcriptPath: URL,
         summaryPath: URL,
+        session: URL,
         logger: SessionLogger
     ) async {
+        // Track 4.5 — long-recording confirmation gate
+        if config.longRecordingThresholdMinutes > 0 {
+            let audioURL = session.appendingPathComponent("audio.m4a")
+            if let cmDuration = try? await AVURLAsset(url: audioURL).load(.duration) {
+                let seconds = cmDuration.seconds
+                let thresholdSeconds = Double(config.longRecordingThresholdMinutes) * 60
+                if seconds > thresholdSeconds {
+                    let shouldSummarize = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                        longRecordingContinuation = cont
+                        pendingLongRecordingDuration = seconds
+                        state = .awaitingLongRecordingConfirmation
+                    }
+                    if !shouldSummarize {
+                        logger.log("long-recording: user skipped summarization")
+                        return
+                    }
+                    logger.log("long-recording: user confirmed summarization")
+                }
+            }
+        }
+
         state = .summarizing
         logger.log("summarization started backend=\(config.llmBackend) model=\(config.llmModel) profile=\(promptProfile ?? "default")")
         do {
@@ -355,7 +489,7 @@ final class PipelineRunner {
     /// for the detail view to render in real time. Writes the final text to
     /// `summaryPath` before clearing the live state, so there is no flash of
     /// stale disk content between stream-end and the caller's reload.
-    private func streamSummary(
+    func streamSummary(
         session: URL,
         transcript: String,
         summaryPath: URL,
@@ -388,192 +522,12 @@ final class PipelineRunner {
         return accumulated
     }
 
-    private func finishSession(_ session: URL) {
+    private func finishSession(_ session: URL, config: AppConfig) {
         stopParticipantsCapture()
         state = .done(sessionPath: session.path)
         NotificationManager.notifyDone(sessionName: SessionManager.displayName(session))
-    }
-
-    // MARK: - History re-runs
-
-    /// Result of a pipeline operation.
-    struct CLIResult {
-        let ok: Bool
-        let error: String
-    }
-
-    /// Re-transcribe a session from its audio.
-    ///
-    /// `languageOverride` wins over `config.language` when non-nil; same
-    /// for `backendOverride` against `config.transcriptionBackend`. The
-    /// detail view uses these to run a one-off transcription in a different
-    /// language or with a different backend (e.g. fall back to OpenAI for a
-    /// recording WhisperKit struggled with) without touching the global
-    /// config.
-    func transcribeSession(
-        _ session: URL,
-        config: AppConfig,
-        languageOverride: String? = nil,
-        backendOverride: String? = nil
-    ) async -> CLIResult {
-        let txPath = session.appendingPathComponent("transcript.txt")
-        var cfg = config
-        if let languageOverride {
-            cfg.language = languageOverride
+        Task {
+            await IntegrationDispatcher.dispatch(session: session, config: config)
         }
-        if let backendOverride, !backendOverride.isEmpty {
-            cfg.transcriptionBackend = backendOverride
-        }
-
-        logger.info(
-            """
-            re-transcribe: \(session.path, privacy: .public) \
-            lang=\(cfg.language, privacy: .public) \
-            backend=\(cfg.transcriptionBackend, privacy: .public)
-            """
-        )
-        appendSessionLog(
-            session,
-            "re-transcribe start lang=\(cfg.language) backend=\(cfg.transcriptionBackend)"
-        )
-
-        let previousState = state
-        state = .transcribing
-        transcribingSession = session
-        isCancelling = false
-        defer {
-            transcribingSession = nil
-            isCancelling = false
-            if case .transcribing = state { state = previousState }
-        }
-
-        do {
-            let result = try await transcriptionService.transcribe(
-                session: session,
-                config: cfg
-            )
-            try result.write(to: txPath, atomically: true, encoding: .utf8)
-            SessionManager.setLanguage(session, cfg.language)
-            return CLIResult(ok: true, error: "")
-        } catch is CancellationError {
-            logger.info("re-transcribe cancelled")
-            appendSessionLog(session, "re-transcribe cancelled")
-            return CLIResult(ok: false, error: "Cancelled")
-        } catch {
-            let detail = error.localizedDescription
-            logger.error(
-                """
-                re-transcribe failed: \(detail, privacy: .public) \
-                type=\(String(reflecting: type(of: error)), privacy: .public) \
-                raw=\(String(reflecting: error), privacy: .public)
-                """
-            )
-            appendSessionLog(session, "re-transcribe failed: \(detail)")
-            return CLIResult(ok: false, error: detail)
-        }
-    }
-
-    /// Append a line to the given session's `run.log`. Used by re-run paths
-    /// so the per-session log captures retries and their failures without
-    /// requiring users to spelunk `log show`.
-    private func appendSessionLog(_ session: URL, _ message: String) {
-        SessionLogger(
-            logPath: session.appendingPathComponent("run.log")
-        ).log(message)
-    }
-
-    /// Optional one-shot overrides for a single re-summarize call.
-    ///
-    /// `backend`/`model` let the detail view pick a different LLM without
-    /// touching the global config. `focus` is a free-form user note appended
-    /// to the system prompt — typically "focus on X" — so people can steer
-    /// a summary towards a topic without creating a new prompt profile.
-    struct SummarizeOverrides {
-        var backend: String?
-        var model: String?
-        var focus: String?
-    }
-
-    /// Re-summarize a session from its transcript.
-    func summarizeSession(
-        _ session: URL,
-        config: AppConfig,
-        profile: String?,
-        overrides: SummarizeOverrides = .init()
-    ) async -> CLIResult {
-        let txPath = session.appendingPathComponent("transcript.txt")
-        let smPath = session.appendingPathComponent("summary.md")
-
-        guard FileManager.default.fileExists(atPath: txPath.path) else {
-            return CLIResult(ok: false, error: "Transcript file not found")
-        }
-
-        let effectiveConfig = applyOverrides(overrides, to: config)
-        logger.info(
-            "re-summarize: \(txPath.path) backend=\(effectiveConfig.llmBackend) model=\(effectiveConfig.llmModel)"
-        )
-
-        let previousState = state
-        state = .summarizing
-        isCancelling = false
-
-        // Run inside a stored Task so `cancelProcessing` can tear it down
-        // mid-stream — the caller's Task isn't reachable from the runner.
-        let work: Task<CLIResult, Never> = Task { [weak self] in
-            guard let self else { return CLIResult(ok: false, error: "Cancelled") }
-            do {
-                let transcript = try String(contentsOf: txPath, encoding: .utf8)
-                let basePrompt = SummarizationService.loadPromptProfile(profile)
-                let prompt = Self.composePrompt(base: basePrompt, focus: overrides.focus)
-                _ = try await self.streamSummary(
-                    session: session,
-                    transcript: transcript,
-                    summaryPath: smPath,
-                    config: effectiveConfig,
-                    prompt: prompt
-                )
-                return CLIResult(ok: true, error: "")
-            } catch is CancellationError {
-                return CLIResult(ok: false, error: "Cancelled")
-            } catch {
-                return CLIResult(ok: false, error: error.localizedDescription)
-            }
-        }
-        summarizeTask = work
-        let result = await work.value
-        summarizeTask = nil
-        isCancelling = false
-        if case .summarizing = state { state = previousState }
-
-        if !result.ok, result.error == "Cancelled" {
-            logger.info("re-summarize cancelled")
-            appendSessionLog(session, "re-summarize cancelled")
-        } else if !result.ok {
-            logger.error("re-summarize failed: \(result.error, privacy: .public)")
-            appendSessionLog(session, "re-summarize failed: \(result.error)")
-        }
-        return result
-    }
-
-    /// Produce a config with backend/model swapped when the caller supplied
-    /// overrides. Keeps the original config untouched so the user's saved
-    /// preferences aren't mutated by a one-off regenerate.
-    private func applyOverrides(_ overrides: SummarizeOverrides, to config: AppConfig) -> AppConfig {
-        var copy = config
-        if let backend = overrides.backend, !backend.isEmpty { copy.llmBackend = backend }
-        if let model = overrides.model, !model.isEmpty { copy.llmModel = model }
-        return copy
-    }
-
-    /// Combine the profile prompt (or the built-in default) with an optional
-    /// free-form focus instruction. Returns `nil` when there's nothing to
-    /// override — the service will fall back to `defaultPrompt`.
-    static func composePrompt(base: String?, focus: String?) -> String? {
-        let trimmedFocus = focus?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedFocus, !trimmedFocus.isEmpty {
-            let root = base ?? SummarizationService.defaultPrompt
-            return root + "\n\nAdditional instructions from the user:\n" + trimmedFocus
-        }
-        return base
     }
 }

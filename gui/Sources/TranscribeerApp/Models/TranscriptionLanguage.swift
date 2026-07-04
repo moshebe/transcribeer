@@ -33,6 +33,16 @@ enum TranscriptionLanguage: String, CaseIterable, Identifiable, Hashable {
         Self(rawValue: raw) ?? .auto
     }
 
+    /// Human-readable display name for an arbitrary language code string.
+    /// Known codes (`"en"`, `"he"`, `"auto"`) map through the enum's
+    /// `displayName`. Unrecognised codes are uppercased (e.g. `"fr"` → `"FR"`).
+    static func displayName(for code: String) -> String {
+        if let known = Self(rawValue: code) {
+            return known.displayName
+        }
+        return code.uppercased()
+    }
+
     /// The value passed to WhisperKit's `DecodingOptions.language`.
     /// `nil` means auto-detect; a two-letter code forces that language.
     var whisperCode: String? {

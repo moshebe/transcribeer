@@ -174,6 +174,10 @@ struct HistoryView: View {
         case .done:
             Label("Done", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
+        case .awaitingPostRecordingChoice:
+            Label("Choose action…", systemImage: "questionmark.circle")
+        case .awaitingLongRecordingConfirmation:
+            Label("Confirm summarization…", systemImage: "questionmark.circle")
         case .error(let msg):
             Label(msg, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
@@ -382,6 +386,8 @@ struct HistoryView: View {
             .controlSize(.large)
             .keyboardShortcut(".", modifiers: .command)
             .help("Cancel (⌘.)")
+        case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation:
+            EmptyView()
         }
     }
 

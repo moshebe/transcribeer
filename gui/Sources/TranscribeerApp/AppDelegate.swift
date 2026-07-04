@@ -3,6 +3,7 @@ import os.log
 import UserNotifications
 
 private let logger = Logger(subsystem: "com.transcribeer", category: "delegate")
+private let hotkeyLogger = Logger(subsystem: "com.transcribeer", category: "hotkey")
 
 /// App-wide build metadata.
 enum AppBuild {
@@ -30,6 +31,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationManager.setup()
         UNUserNotificationCenter.current().delegate = self
         logger.info("startup complete")
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        GlobalHotkeyManager.shared.unregisterAll()
+    }
+
+    // MARK: - Global hotkey
+
+    /// Register (or re-register) the "open app" hotkey from the given config.
+    /// Safe to call multiple times — re-registers on each config change.
+    @MainActor
+    func applyHotkey(from config: AppConfig) {
+        // Always unregister the previous binding first (id 1 = open-app).
+        GlobalHotkeyManager.shared.unregister(id: 1)
+
+        let hotkeyString = config.openAppHotkey
+        guard !hotkeyString.isEmpty else {
+            hotkeyLogger.info("open-app hotkey disabled (empty config)")
+            return
+        }
+        guard let descriptor = HotkeyDescriptor.parse(hotkeyString) else {
+            hotkeyLogger.error("could not parse open_app_hotkey: \(hotkeyString, privacy: .public)")
+            return
+        }
+
+        do {
+            try GlobalHotkeyManager.shared.register(
+                id: 1,
+                keyCode: descriptor.keyCode,
+                modifiers: descriptor.modifiers
+            ) {
+                hotkeyLogger.info("open-app hotkey fired — activating")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        } catch {
+            hotkeyLogger.error("hotkey registration error: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     @MainActor

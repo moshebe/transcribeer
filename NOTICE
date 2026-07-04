@@ -1,0 +1,16 @@
+Transcribeer
+Copyright 2024 Moshe Beladev
+Licensed under the MIT License (see LICENSE).
+
+---
+
+ivrit.ai Hebrew Whisper Models
+Copyright 2024 ivrit.ai contributors
+Licensed under the Apache License, Version 2.0
+
+The CoreML-format model weights distributed with Transcribeer are converted
+from ivrit-ai/whisper-large-v3-turbo and ivrit-ai/whisper-large-v3.
+
+Reference: Marmor, Y., Lifshitz, Y., Snapir, Y., & Misgav, K. (2025).
+Building an Accurate Open-Source Hebrew ASR System through Crowdsourcing.
+Proc. Interspeech 2025, 723–727.

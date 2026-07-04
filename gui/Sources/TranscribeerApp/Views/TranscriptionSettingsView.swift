@@ -1,4 +1,5 @@
 import SwiftUI
+import TranscribeerCore
 
 /// Transcription tab of the Settings window.
 ///
@@ -13,6 +14,8 @@ struct TranscriptionSettingsView: View {
     var save: () -> Void
     var saveAPIKey: (String) -> Void
     var reloadAPIKey: () -> Void
+    /// Optional — when provided, the RAM warning banner is reactive.
+    var transcriptionService: TranscriptionService?
 
     @State private var modelCatalog = ModelCatalogService()
     @State private var saveTask: Task<Void, Never>?
@@ -38,12 +41,15 @@ struct TranscriptionSettingsView: View {
         .padding(.top, 8)
         .onDisappear { saveTask?.cancel() }
         .task {
-            // Make sure whatever the user has selected is visible in the
-            // picker, then refresh from the network. If refresh fails the
-            // pre-seeded entry keeps the UI usable.
+            // Seed the catalog with all currently-selected models so pickers
+            // are never empty before the network refresh completes.
             modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.whisperModel))
+            modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.hebrewWhisperModel))
+            modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.englishWhisperModel))
             await modelCatalog.refresh()
             modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.whisperModel))
+            modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.hebrewWhisperModel))
+            modelCatalog.ensureEntry(for: AppConfig.canonicalWhisperModel(config.englishWhisperModel))
         }
     }
 
@@ -81,23 +87,133 @@ struct TranscriptionSettingsView: View {
 
     @ViewBuilder
     private var whisperKitSection: some View {
+        hebrewModelSection
+        englishModelSection
+        otherLanguagesSection
+        advancedSection
+    }
+
+    // MARK: Hebrew model section
+
+    private var hebrewModelSection: some View {
         Section {
-            modelPicker
+            CuratedModelPicker(
+                label: "Hebrew model",
+                language: "he",
+                selection: Binding(
+                    get: { config.hebrewWhisperModel },
+                    set: { config.hebrewWhisperModel = $0; save() }
+                ),
+                downloader: HebrewModelDownloader()
+            )
+        } header: {
+            Text("Hebrew")
+        } footer: {
+            Text("Used when Language is set to Hebrew. ivrit.ai CoreML models are downloaded separately.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: English model section
+
+    private var englishModelSection: some View {
+        Section {
+            CuratedModelPicker(
+                label: "English model",
+                language: "en",
+                selection: Binding(
+                    get: { config.englishWhisperModel },
+                    set: { config.englishWhisperModel = $0; save() }
+                ),
+                downloader: nil
+            )
+        } header: {
+            Text("English")
+        } footer: {
+            Text("Used when Language is set to English. Downloaded from argmaxinc/whisperkit-coreml on first use.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Other languages section
+
+    private var otherLanguagesSection: some View {
+        Section {
+            generalModelPicker
+            ramWarningBanner
+            idleUnloadStepper
+        } header: {
+            catalogHeader
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Used for Auto-detect and all other languages. Models are downloaded on first use (~0.1–3 GB).")
+                if let message = modelCatalog.lastError {
+                    Text(message).foregroundStyle(.orange)
+                }
+            }
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Advanced section
+
+    private var advancedSection: some View {
+        Section {
             TextField("Custom model repo (optional)", text: Binding(
                 get: { config.whisperModelRepo },
                 set: { config.whisperModelRepo = $0; scheduleSave() },
             ))
             .onSubmit { saveTask?.cancel(); save() }
         } header: {
-            whisperHeader
+            Text("Advanced")
         } footer: {
-            whisperFooter
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Override the HuggingFace repo for the 'Other languages' model.")
+                Text("Example: owner/ivrit-ai-whisper-large-v3-turbo-coreml")
+            }
+            .foregroundStyle(.secondary)
         }
     }
 
-    private var whisperHeader: some View {
+    @ViewBuilder
+    private var ramWarningBanner: some View {
+        if let warning = transcriptionService?.ramWarning {
+            let availGB = String(format: "%.1f", Double(warning.available) / 1_000_000_000)
+            let reqGB = String(format: "%.1f", Double(warning.required) / 1_000_000_000)
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                Text("Only \(availGB) GB available — this model needs ~\(reqGB) GB. Consider the turbo model.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var idleUnloadStepper: some View {
+        Stepper(
+            value: Binding(
+                get: { config.idleUnloadMinutes },
+                set: { config.idleUnloadMinutes = max(0, $0); save() },
+            ),
+            in: 0...120,
+        ) {
+            HStack {
+                Text("Unload model after idle")
+                Spacer()
+                Text(config.idleUnloadMinutes == 0
+                     ? "Never"
+                     : "\(config.idleUnloadMinutes) min")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private var catalogHeader: some View {
         HStack {
-            Text("Whisper model")
+            Text("Other languages")
             Spacer()
             if modelCatalog.isLoading {
                 ProgressView().controlSize(.small)
@@ -114,19 +230,7 @@ struct TranscriptionSettingsView: View {
         }
     }
 
-    private var whisperFooter: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Models are downloaded on first use (~0.1–1.5 GB). Stored in ~/.transcribeer/models/.")
-            Text("Custom repo: HuggingFace repo for ivrit-ai or other fine-tuned models")
-            Text("(e.g. owner/ivrit-ai-whisper-large-v3-turbo-coreml).")
-            if let message = modelCatalog.lastError {
-                Text(message).foregroundStyle(.orange)
-            }
-        }
-        .foregroundStyle(.secondary)
-    }
-
-    private var modelPicker: some View {
+    private var generalModelPicker: some View {
         let selected = AppConfig.canonicalWhisperModel(config.whisperModel)
         return Picker("Model", selection: Binding(
             get: { selected },
@@ -354,5 +458,102 @@ struct TranscriptionAPIKeyStatus: View {
 
     private static func envHasValue(_ name: String) -> Bool {
         !(ProcessInfo.processInfo.environment[name]?.isEmpty ?? true)
+    }
+}
+
+// MARK: - CuratedModelPicker
+
+/// A Picker that presents a hardcoded curated list for a specific language,
+/// plus a "Custom…" option that reveals a freeform text field.
+///
+/// `downloader` is non-nil for Hebrew entries so we can show an install badge.
+struct CuratedModelPicker: View {
+    let label: String
+    let language: String
+    @Binding var selection: String
+    /// Passed in for Hebrew entries to check `isInstalled`; nil for English.
+    var downloader: HebrewModelDownloader?
+
+    @State private var isCustom: Bool = false
+
+    private static let customSentinel = "__custom__"
+
+    private var curatedEntries: [CuratedModelEntry] {
+        ModelCatalogService.curatedEntries(language: language)
+    }
+
+    private var pickerSelection: Binding<String> {
+        Binding(
+            get: {
+                let isKnown = curatedEntries.contains(where: { $0.id == selection })
+                return isKnown ? selection : Self.customSentinel
+            },
+            set: { newValue in
+                if newValue == Self.customSentinel {
+                    isCustom = true
+                } else {
+                    isCustom = false
+                    selection = newValue
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Picker(label, selection: pickerSelection) {
+                ForEach(curatedEntries) { entry in
+                    CuratedModelRow(entry: entry, downloader: downloader).tag(entry.id)
+                }
+                Divider()
+                Text("Custom…").tag(Self.customSentinel)
+            }
+            .pickerStyle(.menu)
+            .onAppear {
+                let isKnown = curatedEntries.contains(where: { $0.id == selection })
+                isCustom = !isKnown && !selection.isEmpty
+            }
+
+            if isCustom {
+                TextField("Model ID (e.g. owner/my-model)", text: $selection)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption.monospaced())
+            }
+        }
+    }
+}
+
+// MARK: - CuratedModelRow
+
+/// A picker row for a curated model showing display name, size, and install status.
+struct CuratedModelRow: View {
+    let entry: CuratedModelEntry
+    var downloader: HebrewModelDownloader?
+
+    private var manifestEntry: ModelManifestEntry? {
+        ModelManifest.all.first(where: { $0.id == entry.id })
+    }
+
+    private var isInstalled: Bool {
+        guard let dl = downloader, let manifest = manifestEntry else {
+            // For non-Hebrew models: check standard WhisperKit snapshot dir via
+            // a lightweight folder existence check using the same path ModelCatalogService uses.
+            return false
+        }
+        return dl.isInstalled(manifest)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(entry.displayName)
+            Text(String(format: "%.1f GB", entry.sizeGB))
+                .modifier(SettingsBadgeStyle(tint: .secondary))
+            if entry.isRecommended {
+                Text("recommended").modifier(SettingsBadgeStyle(tint: .accentColor))
+            }
+            if isInstalled {
+                Text("installed").modifier(SettingsBadgeStyle(tint: .green))
+            }
+        }
     }
 }

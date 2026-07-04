@@ -8,13 +8,17 @@ __pycache__/
 # Swift build artifacts
 gui/.build/
 
+# Distribution output (DMGs built locally; CI uploads these to releases)
+dist/
+
 # Claude Code
 .claude/
 
 # Internal dev
 .superpowers/
 .worktrees/
-docs/
+docs/*
+!docs/plans/
 test/
 .agents/
 .pi/
@@ -31,3 +35,5 @@ obsidian-plugin/main.js
 # Secrets / env
 .env
 .env.local
+scripts/whisperkittools
+whisperkittools/
