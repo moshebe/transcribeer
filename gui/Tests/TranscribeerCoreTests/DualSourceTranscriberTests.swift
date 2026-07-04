@@ -175,6 +175,7 @@ struct DualSourceTranscriberTests {
 
     @Test("Diarization respects the mic-multiuser config flag")
     func diarizationRespectsConfigFlag() async throws {
+        try await dualSourceTranscriberMockLock.withLock {
         let originalDiarize = DualSourceTranscriber.diarizeFunc
         let originalTranscribe = DualSourceTranscriber.transcribeChunkFunc
         let originalAudible = DualSourceTranscriber.ensureAudibleFunc
@@ -259,5 +260,6 @@ struct DualSourceTranscriberTests {
         #expect(interleaved.segments[0].text == "hello")
         #expect(interleaved.segments[1].speaker == "Them")
         #expect(interleaved.segments[1].text == "hi")
+        }
     }
 }
