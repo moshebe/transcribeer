@@ -9,6 +9,7 @@ on:
       tag:
         description: 'Release tag (e.g. v0.2.0)'
         required: true
+        type: string
 
 permissions:
   contents: write  # create GitHub Release + upload assets
