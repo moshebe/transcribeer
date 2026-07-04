@@ -107,6 +107,7 @@ struct AppConfigTests {
         cfg.audio.aec = false
         cfg.audio.selfLabel = "Alice"
         cfg.audio.otherLabel = "Bob"
+        cfg.audio.ffmpegPath = "/opt/homebrew/bin/ffmpeg"
         cfg.audio.diarizeMicMultiuser = true
 
         let tmpDir = FileManager.default.temporaryDirectory
@@ -145,6 +146,7 @@ struct AppConfigTests {
         aec = \(cfg.audio.aec)
         self_label = "\(cfg.audio.selfLabel)"
         other_label = "\(cfg.audio.otherLabel)"
+        ffmpeg_path = "\(cfg.audio.ffmpegPath)"
         diarize_mic_multiuser = \(cfg.audio.diarizeMicMultiuser)
         """
         try lines.write(to: path, atomically: true, encoding: .utf8)
@@ -157,6 +159,7 @@ struct AppConfigTests {
         #expect(decoded.audio?.aec == false)
         #expect(decoded.audio?.self_label == "Alice")
         #expect(decoded.audio?.other_label == "Bob")
+        #expect(decoded.audio?.ffmpeg_path == "/opt/homebrew/bin/ffmpeg")
         #expect(decoded.audio?.diarize_mic_multiuser == true)
     }
 

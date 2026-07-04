@@ -347,13 +347,12 @@ final class TranscriptionService {
     ) async throws -> String {
         disarmIdleTimer()
 
-        let micURL = session.appendingPathComponent("audio.mic.caf")
-        let sysURL = session.appendingPathComponent("audio.sys.caf")
+        let micURL = SourceAudioFiles.preferredURL(in: session, source: .mic)
+        let sysURL = SourceAudioFiles.preferredURL(in: session, source: .sys)
         let mixedURL = session.appendingPathComponent("audio.m4a")
-        let fileManager = FileManager.default
-        let hasMic = fileManager.fileExists(atPath: micURL.path)
-        let hasSys = fileManager.fileExists(atPath: sysURL.path)
-        let hasMixed = fileManager.fileExists(atPath: mixedURL.path)
+        let hasMic = micURL != nil
+        let hasSys = sysURL != nil
+        let hasMixed = FileManager.default.fileExists(atPath: mixedURL.path)
 
         let model = backend == .openai
             ? config.openaiTranscriptionModel
@@ -375,8 +374,8 @@ final class TranscriptionService {
         }
         let dualCfg = CloudTranscriptionCoordinator.DualConfig(
             backend: backend,
-            micURL: hasMic ? micURL : nil,
-            sysURL: hasSys ? sysURL : nil,
+            micURL: micURL,
+            sysURL: sysURL,
             timing: timing,
             model: model,
             language: config.language,

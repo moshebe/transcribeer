@@ -175,6 +175,7 @@ struct DualSourceTranscriberTests {
 
     @Test("Diarization respects the mic-multiuser config flag")
     func diarizationRespectsConfigFlag() async throws {
+        try await dualSourceTranscriberMockLock.withLock {
         let originalDiarize = DualSourceTranscriber.diarizeFunc
         let originalTranscribe = DualSourceTranscriber.transcribeChunkFunc
         let originalAudible = DualSourceTranscriber.ensureAudibleFunc
@@ -259,5 +260,45 @@ struct DualSourceTranscriberTests {
         #expect(interleaved.segments[0].text == "hello")
         #expect(interleaved.segments[1].speaker == "Them")
         #expect(interleaved.segments[1].text == "hi")
+        }
+    }
+
+    @Test("Compressed source sidecars trigger the dual-source path")
+    func compressedSidecarsTriggerDualPath() async throws {
+        try await dualSourceTranscriberMockLock.withLock {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("transcribeer-compressed-sidecars-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            try Data("mic".utf8).write(to: SourceAudioFiles.compressedURL(in: dir, source: .mic))
+            try Data("sys".utf8).write(to: SourceAudioFiles.compressedURL(in: dir, source: .sys))
+
+            let originalTranscribe = DualSourceTranscriber.transcribeChunkFunc
+            let originalAudible = DualSourceTranscriber.ensureAudibleFunc
+            defer {
+                DualSourceTranscriber.transcribeChunkFunc = originalTranscribe
+                DualSourceTranscriber.ensureAudibleFunc = originalAudible
+            }
+            DualSourceTranscriber.transcribeChunkFunc = { url, _, _, _, _, _, _ in
+                if url.lastPathComponent.contains("mic") {
+                    return [TranscriptSegment(start: 0, end: 1, text: "mic")]
+                }
+                return [TranscriptSegment(start: 1, end: 2, text: "sys")]
+            }
+            DualSourceTranscriber.ensureAudibleFunc = { _ in }
+
+            var cfg = AppConfig()
+            cfg.audio.selfLabel = "You"
+            cfg.audio.otherLabel = "Them"
+
+            let result = try await DualSourceTranscriber.transcribe(
+                session: dir,
+                cfg: cfg,
+                timing: .init(micStartEpoch: 0, sysStartEpoch: 0)
+            )
+
+            #expect(result.segments.map(\.speaker) == ["You", "Them"])
+            #expect(result.segments.map(\.text) == ["mic", "sys"])
+        }
     }
 }

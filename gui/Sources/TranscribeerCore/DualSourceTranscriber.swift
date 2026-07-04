@@ -42,7 +42,8 @@ public enum DualSourceTranscriber {
 
     /// Transcribe a session directory.
     ///
-    /// - If `audio.mic.caf` or `audio.sys.caf` exists, runs the dual path.
+    /// - If a per-source sidecar (`audio.mic.*`/`audio.sys.*`, raw CAF or
+    ///   compressed M4A) exists, runs the dual path.
     /// - Otherwise falls back to `audio.m4a` legacy transcription.
     public static func transcribe(
         session: URL,
@@ -51,16 +52,13 @@ public enum DualSourceTranscriber {
         onMicProgress: (@Sendable (Double) -> Void)? = nil,
         onSysProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> TranscriptionOutput {
-        let micURL = session.appendingPathComponent("audio.mic.caf")
-        let sysURL = session.appendingPathComponent("audio.sys.caf")
+        let micURL = SourceAudioFiles.preferredURL(in: session, source: .mic)
+        let sysURL = SourceAudioFiles.preferredURL(in: session, source: .sys)
 
-        let hasMic = FileManager.default.fileExists(atPath: micURL.path)
-        let hasSys = FileManager.default.fileExists(atPath: sysURL.path)
-
-        if hasMic || hasSys {
+        if micURL != nil || sysURL != nil {
             return try await transcribeDual(
-                mic: hasMic ? micURL : nil,
-                sys: hasSys ? sysURL : nil,
+                mic: micURL,
+                sys: sysURL,
                 timing: timing,
                 cfg: cfg,
                 progress: .init(mic: onMicProgress, sys: onSysProgress)

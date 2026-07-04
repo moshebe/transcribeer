@@ -1,6 +1,7 @@
 import CaptureCore
 import CoreAudio
 import SwiftUI
+import TranscribeerCore
 
 /// Audio device selection, echo cancellation, and speaker label settings.
 ///
@@ -12,6 +13,7 @@ struct AudioSettingsView: View {
     @State private var outputDevices: [(uid: String, name: String)] = []
     @State private var showAdvanced = false
     @State private var saveTask: Task<Void, Never>?
+    @State private var ffmpegAvailability: AudioProcessingBackendAvailability?
 
     var body: some View {
         Form {
@@ -123,11 +125,81 @@ struct AudioSettingsView: View {
                     .padding(.vertical, 4)
                 }
             }
+
+            Section {
+                ffmpegConfiguration
+            } header: {
+                Text("Audio Backend")
+            } footer: {
+                Text(
+                    "ffmpeg produces smaller, higher-quality compressed audio. "
+                        + "When unavailable, AVFoundation is used as a fallback."
+                )
+                .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding(.top, 8)
         .onAppear { refreshDevices() }
+        .task(id: config.audio.ffmpegPath) { await refreshFFmpegStatus() }
         .onDisappear { saveTask?.cancel() }
+    }
+
+    private var ffmpegConfiguration: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("ffmpeg path", text: Binding(
+                get: { config.audio.ffmpegPath },
+                set: { newValue in
+                    config.audio.ffmpegPath = newValue
+                    scheduleSave()
+                }
+            ))
+            HStack(spacing: 6) {
+                SettingsStatusIcon(
+                    kind: isFFmpegAvailable ? .ok : .warning,
+                    accessibilityLabel: isFFmpegAvailable ? "ffmpeg found" : "ffmpeg missing"
+                )
+                Text(ffmpegStatusText)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let ffmpegResolvedPath {
+                    Text(URL(fileURLWithPath: ffmpegResolvedPath).lastPathComponent)
+                        .modifier(SettingsBadgeStyle(tint: .green, font: .caption.monospaced()))
+                        .help(ffmpegResolvedPath)
+                }
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+            Text("Optional. Empty auto-detects ffmpeg from PATH / Homebrew.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var isFFmpegAvailable: Bool {
+        ffmpegAvailability?.isAvailable == true
+    }
+
+    private var ffmpegResolvedPath: String? {
+        ffmpegAvailability?.executableURL?.path
+    }
+
+    private var ffmpegStatusText: String {
+        if isFFmpegAvailable {
+            return "ffmpeg found"
+        }
+        if !config.audio.ffmpegPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Configured ffmpeg is not executable — using AVFoundation fallback"
+        }
+        return "ffmpeg not found — using AVFoundation fallback"
+    }
+
+    private func refreshFFmpegStatus() async {
+        let processor = FFmpegAudioProcessor(configuredPath: config.audio.ffmpegPath)
+        let availability = await processor.availability()
+        await MainActor.run { ffmpegAvailability = availability }
     }
 
     // MARK: - Device enumeration
