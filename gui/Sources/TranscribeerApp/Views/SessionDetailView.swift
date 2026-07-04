@@ -440,29 +440,6 @@ struct SessionDetailView: View {
         }
     }
 
-    /// Lines to render in the transcript tab.
-    ///
-    /// While WhisperKit is actively transcribing *this* session, show the live
-    /// segments. For dual-source transcription the speaker label is already
-    /// known (self / other); for legacy single-file it shows "…" until the
-    /// diarization pass completes.
-    private var transcriptLines: [TranscriptLine] {
-        if isTranscribingThisSession {
-            let segments = runner.transcriptionService.liveSegments
-                .sorted { $0.start < $1.start }
-            return segments.enumerated().map { idx, seg in
-                TranscriptLine(
-                    id: idx,
-                    start: seg.start,
-                    end: seg.end,
-                    speaker: seg.speaker.isEmpty ? "…" : seg.speaker,
-                    text: TranscriptFormatter.sanitize(seg.text),
-                )
-            }
-        }
-        return TranscriptFormatter.parse(detail.transcript)
-    }
-
     private var isTranscribingThisSession: Bool {
         runner.transcribingSession?.path == session.path.path
     }
@@ -511,17 +488,49 @@ struct SessionDetailView: View {
         }
     }
 
-    // MARK: - Export
+    // MARK: - Progress row
 
-    private func exportTranscript() {
+    private var showProgressRow: Bool {
+        runner.transcriptionProgress != nil
+            || runner.transcriptionService.modelState.isBusy
+    }
+}
+
+// MARK: - SessionDetailView: transcript helpers + export
+
+private extension SessionDetailView {
+    /// Lines to render in the transcript tab.
+    ///
+    /// While WhisperKit is actively transcribing *this* session, show the live
+    /// segments. For dual-source transcription the speaker label is already
+    /// known (self / other); for legacy single-file it shows "…" until the
+    /// diarization pass completes.
+    var transcriptLines: [TranscriptLine] {
+        if isTranscribingThisSession {
+            let segments = runner.transcriptionService.liveSegments
+                .sorted { $0.start < $1.start }
+            return segments.enumerated().map { idx, seg in
+                TranscriptLine(
+                    id: idx,
+                    start: seg.start,
+                    end: seg.end,
+                    speaker: seg.speaker.isEmpty ? "…" : seg.speaker,
+                    text: TranscriptFormatter.sanitize(seg.text),
+                )
+            }
+        }
+        return TranscriptFormatter.parse(detail.transcript)
+    }
+
+    func exportTranscript() {
         export(content: detail.transcript, defaultName: "transcript", ext: "txt")
     }
 
-    private func exportSummary() {
+    func exportSummary() {
         export(content: detail.summary, defaultName: "summary", ext: "md")
     }
 
-    private func export(content: String, defaultName: String, ext: String) {
+    func export(content: String, defaultName: String, ext: String) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "\(detail.name.isEmpty ? defaultName : detail.name).\(ext)"
         panel.canCreateDirectories = true
@@ -532,13 +541,6 @@ struct SessionDetailView: View {
         } catch {
             statusText = "Export failed: \(error.localizedDescription)"
         }
-    }
-
-    // MARK: - Progress row
-
-    private var showProgressRow: Bool {
-        runner.transcriptionProgress != nil
-            || runner.transcriptionService.modelState.isBusy
     }
 }
 

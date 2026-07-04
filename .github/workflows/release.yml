@@ -104,7 +104,7 @@ cask "transcribeer" do
   desc "Local-first meeting transcription and summarization for macOS"
   homepage "https://github.com/moshebe/transcribeer"
 
-  depends_on macos: ">= :sequoia"
+  depends_on macos: :sequoia
   depends_on arch: :arm64
 
   app "Transcribeer.app"
