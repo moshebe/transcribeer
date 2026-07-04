@@ -1,7 +1,7 @@
 import CaptureCore
 import Foundation
-import WhisperKit
 import TranscribeerCore
+import WhisperKit
 
 /// A single transcribed segment with timing info.
 struct TranscriptSegment: Sendable {
@@ -170,17 +170,26 @@ final class TranscriptionService {
             download: cachedFolder == nil
         )
 
-        let kit = try await WhisperKit(config)
-        kit.modelStateCallback = { [weak self] _, newState in
-            Task { @MainActor in
-                self?.modelState = newState
+        do {
+            let kit = try await WhisperKit(config)
+            kit.modelStateCallback = { [weak self] _, newState in
+                Task { @MainActor in
+                    self?.modelState = newState
+                }
             }
-        }
 
-        whisperKit = kit
-        modelState = kit.modelState
-        loadedModelName = name
-        loadedModelRepo = modelRepo
+            whisperKit = kit
+            modelState = kit.modelState
+            loadedModelName = name
+            loadedModelRepo = modelRepo
+        } catch WhisperError.modelsUnavailable(let detail) {
+            modelState = .unloaded
+            throw TranscriptionError.modelNotFound(
+                model: canonical,
+                repo: modelRepo ?? "argmaxinc/whisperkit-coreml",
+                detail: detail
+            )
+        }
     }
 
     /// Returns the on-disk folder for a WhisperKit variant if it's already been
@@ -707,6 +716,8 @@ private final class ProgressSink: @unchecked Sendable {
 
 enum TranscriptionError: LocalizedError {
     case modelNotLoaded
+    /// WhisperKit could not find a matching CoreML folder for `model` inside `repo`.
+    case modelNotFound(model: String, repo: String, detail: String)
     case missingAPIKey(backend: String, envVar: String)
     case httpError(backend: String, status: Int, body: String)
     case invalidResponse(backend: String, detail: String)
@@ -716,6 +727,13 @@ enum TranscriptionError: LocalizedError {
         switch self {
         case .modelNotLoaded:
             return "Whisper model is not loaded."
+        case let .modelNotFound(model, repo, _):
+            return "Model not found. Please check the model or repo name and try again. "
+                + "WhisperKit looked for a folder named \"\(model)\" inside \"\(repo)\". "
+                + "Make sure the repo exists, is in CoreML format (.mlmodelc bundles), "
+                + "and that the \"Model folder in repo\" field matches a folder inside it. "
+                + "CTranslate2 / faster-whisper repos (e.g. ending in -ct2) are not "
+                + "supported — convert to CoreML first with scripts/convert-ivrit-ai.sh."
         case let .missingAPIKey(backend, envVar):
             let envHint = envVar.isEmpty ? "" : " or set $\(envVar)"
             return "\(backend) API key missing — add it in Settings → Transcription\(envHint)."

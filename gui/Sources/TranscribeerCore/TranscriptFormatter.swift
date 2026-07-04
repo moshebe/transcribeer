@@ -11,34 +11,62 @@ public struct LabeledSegment: Sendable {
 /// Merges Whisper segments with diarization and formats the transcript.
 public enum TranscriptFormatter {
     /// Assign a speaker label to each Whisper segment based on overlap
-    /// with diarization segments. Falls back to midpoint containment.
+    /// with diarization segments.
+    ///
+    /// Matching priority:
+    /// 1. Maximum temporal overlap — the diar segment that shares the most
+    ///    time with the whisper segment wins.
+    /// 2. Nearest segment — when no diar segment overlaps at all, pick the
+    ///    one with the smallest temporal distance to the whisper midpoint.
+    ///    This handles tail segments that extend past the last diarized
+    ///    interval (pyannote often truncates the tail), ensuring they snap
+    ///    to the last real speaker rather than defaulting to UNKNOWN or
+    ///    being stolen by an earlier long segment via midpoint containment.
+    ///
+    /// Falls back to "UNKNOWN" only when `diarSegments` is empty.
     public static func assignSpeakers(
         whisperSegments: [TranscriptSegment],
         diarSegments: [DiarSegment]
     ) -> [LabeledSegment] {
-        whisperSegments.map { ws in
-            let wsMid = (ws.start + ws.end) / 2
-            var bestSpeaker = "UNKNOWN"
-            var bestOverlap = 0.0
+        // Sort once for deterministic distance tie-breaking (nearest end/start).
+        let sorted = diarSegments.sorted { $0.start < $1.start }
 
-            for ds in diarSegments {
+        return whisperSegments.map { ws in
+            guard !sorted.isEmpty else {
+                return LabeledSegment(start: ws.start, end: ws.end, speaker: "UNKNOWN", text: ws.text)
+            }
+
+            let wsMid = (ws.start + ws.end) / 2
+
+            // Primary pass: find best overlap.
+            var bestOverlap = 0.0
+            var bestSpeaker = ""
+            for ds in sorted {
                 let overlap = max(0, min(ws.end, ds.end) - max(ws.start, ds.start))
                 if overlap > bestOverlap {
                     bestOverlap = overlap
                     bestSpeaker = ds.speaker
                 }
-                if bestOverlap == 0 && ds.start <= wsMid && wsMid <= ds.end {
-                    bestSpeaker = ds.speaker
-                }
             }
 
-            return LabeledSegment(
-                start: ws.start,
-                end: ws.end,
-                speaker: bestSpeaker,
-                text: ws.text
-            )
+            if bestOverlap > 0 {
+                return LabeledSegment(start: ws.start, end: ws.end, speaker: bestSpeaker, text: ws.text)
+            }
+
+            // Fallback: nearest diar segment by distance from whisper midpoint.
+            // Distance is 0 when midpoint is inside the diar segment (containment),
+            // otherwise the gap from the midpoint to the nearest edge.
+            let speaker = sorted.min(by: { distanceToMid($0, mid: wsMid) < distanceToMid($1, mid: wsMid) })?.speaker
+                ?? "UNKNOWN"
+            return LabeledSegment(start: ws.start, end: ws.end, speaker: speaker, text: ws.text)
         }
+    }
+
+    /// Temporal distance from `mid` to the diar segment.
+    /// Returns 0 when `mid` is inside the segment, otherwise the gap length.
+    private static func distanceToMid(_ ds: DiarSegment, mid: Double) -> Double {
+        if ds.start <= mid && mid <= ds.end { return 0 }
+        return mid < ds.start ? ds.start - mid : mid - ds.end
     }
 
     /// Format labeled segments: rename speakers, merge consecutive

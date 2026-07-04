@@ -164,6 +164,18 @@ struct TranscriptionSettingsView: View {
                 set: { config.whisperModelRepo = $0; scheduleSave() },
             ))
             .onSubmit { saveTask?.cancel(); save() }
+            if !config.whisperModelRepo.isEmpty {
+                TextField("Model folder in repo", text: Binding(
+                    get: { config.whisperModel },
+                    set: { config.whisperModel = $0; scheduleSave() },
+                ))
+                .onSubmit { saveTask?.cancel(); save() }
+                .help(
+                    "The folder name inside the custom repo that WhisperKit should load. "
+                    + "Must match a folder in the repo exactly "
+                    + "(e.g. ivrit-ai_whisper-large-v3-turbo)."
+                )
+            }
         } header: {
             Text("Advanced")
         } footer: {
@@ -228,6 +240,26 @@ struct TranscriptionSettingsView: View {
                 .accessibilityLabel("Refresh model list")
             }
         }
+    }
+
+    private var whisperFooter: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Models are downloaded on first use (~0.1–1.5 GB). Stored in ~/.transcribeer/models/.")
+            Text("Custom repo: HuggingFace repo for ivrit-ai or other fine-tuned models")
+            Text("(e.g. owner/ivrit-ai-whisper-large-v3-turbo-coreml).")
+            if AppConfig.isCTranslate2Repo(config.whisperModelRepo) {
+                Text(
+                    "This looks like a CTranslate2 / faster-whisper model. "
+                    + "WhisperKit requires CoreML format — convert it first with "
+                    + "scripts/convert-ivrit-ai.sh, then point the repo here."
+                )
+                .foregroundStyle(.orange)
+            }
+            if let message = modelCatalog.lastError {
+                Text(message).foregroundStyle(.orange)
+            }
+        }
+        .foregroundStyle(.secondary)
     }
 
     private var generalModelPicker: some View {
