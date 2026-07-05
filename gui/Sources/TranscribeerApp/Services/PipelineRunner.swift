@@ -412,6 +412,7 @@ final class PipelineRunner {
         defer { transcribingSession = nil }
         logger.log("transcription started")
 
+        let startedAt = Date()
         do {
             let result = try await transcriptionService.transcribe(
                 session: session,
@@ -422,6 +423,11 @@ final class PipelineRunner {
             if let detected = transcriptionService.lastDetectedLanguage {
                 SessionManager.setDetectedLanguage(session, detected)
             }
+            SessionUsageRecorder.recordTranscription(
+                session: session,
+                config: config,
+                duration: Date().timeIntervalSince(startedAt),
+            )
             logger.log("transcription done")
             return true
         } catch is CancellationError {
@@ -504,6 +510,7 @@ final class PipelineRunner {
             liveSummary = ""
         }
 
+        let startedAt = Date()
         let stream = try await SummarizationService.streamSummarize(
             transcript: transcript,
             backend: config.llmBackend,
@@ -513,12 +520,24 @@ final class PipelineRunner {
         )
 
         var accumulated = ""
-        for try await fragment in stream {
+        var tokenUsage: TokenUsage?
+        for try await event in stream {
             try Task.checkCancellation()
-            accumulated += fragment
-            liveSummary = accumulated
+            switch event {
+            case let .textDelta(fragment):
+                accumulated += fragment
+                liveSummary = accumulated
+            case let .completed(usage):
+                tokenUsage = usage
+            }
         }
         try accumulated.write(to: summaryPath, atomically: true, encoding: .utf8)
+        SessionUsageRecorder.recordSummarization(
+            session: session,
+            config: config,
+            usage: tokenUsage,
+            duration: Date().timeIntervalSince(startedAt),
+        )
         return accumulated
     }
 

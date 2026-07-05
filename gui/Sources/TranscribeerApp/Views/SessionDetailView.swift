@@ -389,8 +389,11 @@ struct SessionDetailView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            SummaryMarkdownView(text: summaryText)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                usageStrip(detail.summarizationUsage, hidden: isSummarizingThisSession)
+                SummaryMarkdownView(text: summaryText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -429,14 +432,17 @@ struct SessionDetailView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            TranscriptView(
-                lines: lines,
-                onSeek: { playerVM.seek(to: $0) },
-                playheadTime: playerVM.hasAudio ? playerVM.currentTime : nil,
-                isStreaming: isTranscribingThisSession,
-                otherLabel: config.audio.otherLabel
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                usageStrip(detail.transcriptionUsage, hidden: isTranscribingThisSession)
+                TranscriptView(
+                    lines: lines,
+                    onSeek: { playerVM.seek(to: $0) },
+                    playheadTime: playerVM.hasAudio ? playerVM.currentTime : nil,
+                    isStreaming: isTranscribingThisSession,
+                    otherLabel: config.audio.otherLabel
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -499,6 +505,18 @@ struct SessionDetailView: View {
 // MARK: - SessionDetailView: transcript helpers + export
 
 private extension SessionDetailView {
+    /// Leading-aligned strip of pipeline-usage badges shown above the summary
+    /// and transcript bodies. Hidden while the corresponding stage is streaming,
+    /// since mid-run metadata is stale.
+    @ViewBuilder
+    func usageStrip(_ usage: PipelineUsage?, hidden: Bool) -> some View {
+        if let usage, !hidden {
+            HStack { PipelineUsageBadges(usage: usage); Spacer() }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+        }
+    }
+
     /// Lines to render in the transcript tab.
     ///
     /// While WhisperKit is actively transcribing *this* session, show the live

@@ -1,6 +1,21 @@
 import Foundation
 import LLM
 
+/// Token counts reported alongside a streaming summary's final event.
+struct TokenUsage: Equatable, Sendable {
+    let inputTokens: Int
+    let outputTokens: Int
+}
+
+/// Events yielded by `SummarizationService.streamSummarize`. Text fragments
+/// arrive as `.textDelta`; the stream finishes with a single `.completed`
+/// carrying token usage when the provider reported it (some Ollama models
+/// don't, so it's optional).
+enum SummarizationStreamEvent: Sendable {
+    case textDelta(String)
+    case completed(usage: TokenUsage?)
+}
+
 /// Summarizes transcripts via OpenAI, Anthropic, Gemini (Vertex AI), or Ollama.
 enum SummarizationService {
     static let defaultPrompt = """
@@ -15,9 +30,10 @@ enum SummarizationService {
         Respond in markdown.
         """
 
-    /// Stream a summary as incremental text deltas. Consumers should concatenate
-    /// the yielded fragments for the running total. The stream finishes when
-    /// the model is done; no `.completed` sentinel is emitted.
+    /// Stream a summary as incremental events. Text fragments arrive as
+    /// `.textDelta`; the stream ends with a `.completed` carrying token usage
+    /// when the provider reported it. Consumers concatenate the `.textDelta`
+    /// fragments for the running total.
     ///
     /// `LLM` is an actor, so its `streamConversation` factory is implicitly
     /// async — hence this method is async even though the heavy lifting
@@ -35,7 +51,7 @@ enum SummarizationService {
         model: String,
         ollamaHost: String = "http://localhost:11434",
         prompt: String? = nil,
-    ) async throws -> AsyncThrowingStream<String, Error> {
+    ) async throws -> AsyncThrowingStream<SummarizationStreamEvent, Error> {
         guard let kind = LLMBackend(rawValue: backend) else {
             throw SummarizationError.unknownBackend(backend)
         }
@@ -56,8 +72,13 @@ enum SummarizationService {
             let task = Task {
                 do {
                     for try await event in source {
-                        if case let .textDelta(fragment) = event, !fragment.isEmpty {
-                            continuation.yield(fragment)
+                        switch event {
+                        case let .textDelta(fragment) where !fragment.isEmpty:
+                            continuation.yield(.textDelta(fragment))
+                        case let .completed(response):
+                            continuation.yield(.completed(usage: tokenUsage(from: response)))
+                        default:
+                            break
                         }
                     }
                     continuation.finish()
@@ -67,6 +88,18 @@ enum SummarizationService {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Extract `TokenUsage` from an LLM `ConversationResponse`, handling both
+    /// the OpenAI (`prompt_tokens`/`completion_tokens`) and Anthropic
+    /// (`input_tokens`/`output_tokens`) shapes. Returns `nil` when the
+    /// provider didn't report usage (some Ollama builds).
+    private static func tokenUsage(from response: LLM.ConversationResponse) -> TokenUsage? {
+        let usage = response.rawResponse.usage
+        guard let input = usage.prompt_tokens ?? usage.input_tokens,
+              let output = usage.completion_tokens ?? usage.output_tokens
+        else { return nil }
+        return TokenUsage(inputTokens: input, outputTokens: output)
     }
 
     /// Load a prompt profile from ~/.transcribeer/prompts/<name>.md.
