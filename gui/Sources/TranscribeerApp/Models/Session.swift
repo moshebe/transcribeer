@@ -569,6 +569,13 @@ enum SessionManager {
     }
 
     private static func snippet(_ dir: URL) -> String {
+        // Prefer the LLM-authored one-sentence description written for the
+        // sidebar; fall back to the summary then the transcript.
+        let descriptionPath = dir.appendingPathComponent("description.txt")
+        if let text = try? String(contentsOf: descriptionPath, encoding: .utf8),
+           let first = firstNonEmptyLine(text) {
+            return String(first.prefix(120))
+        }
         let summaryPath = dir.appendingPathComponent("summary.md")
         if let text = try? String(contentsOf: summaryPath, encoding: .utf8),
            let first = firstNonEmptyLine(text) {
