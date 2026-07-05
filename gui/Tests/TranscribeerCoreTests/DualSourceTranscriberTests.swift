@@ -186,10 +186,10 @@ struct DualSourceTranscriberTests {
         }
 
         DualSourceTranscriber.transcribeChunkFunc = { _, _, _, _, _, _, _ in
-            [
+            chunkOutput([
                 TranscriptSegment(start: 0, end: 0.4, text: "hello"),
                 TranscriptSegment(start: 0.6, end: 1, text: "world"),
-            ]
+            ])
         }
         DualSourceTranscriber.ensureAudibleFunc = { _ in }
 
@@ -243,9 +243,9 @@ struct DualSourceTranscriberTests {
         }
         DualSourceTranscriber.transcribeChunkFunc = { url, _, _, _, _, _, _ in
             if url.path.contains("mic") {
-                return [TranscriptSegment(start: 0, end: 2, text: "hello")]
+                return chunkOutput([TranscriptSegment(start: 0, end: 2, text: "hello")])
             }
-            return [TranscriptSegment(start: 1, end: 3, text: "hi")]
+            return chunkOutput([TranscriptSegment(start: 1, end: 3, text: "hi")])
         }
 
         let interleaved = try await DualSourceTranscriber.transcribeDual(
@@ -262,4 +262,80 @@ struct DualSourceTranscriberTests {
         #expect(interleaved.segments[1].text == "hi")
         }
     }
+
+    // MARK: - Budget + detected language propagation
+
+    @Test("Dual path forwards the caller's budget to the chunk transcriber")
+    func dualPathForwardsBudget() async throws {
+        try await dualSourceTranscriberMockLock.withLock {
+        let original = DualSourceTranscriber.transcribeChunkFunc
+        let originalAudible = DualSourceTranscriber.ensureAudibleFunc
+        defer {
+            DualSourceTranscriber.transcribeChunkFunc = original
+            DualSourceTranscriber.ensureAudibleFunc = originalAudible
+        }
+        DualSourceTranscriber.ensureAudibleFunc = { _ in }
+
+        let seen = SendableBox<TranscriptionBudget?>(nil)
+        DualSourceTranscriber.transcribeChunkFunc = { _, _, _, _, _, budget, _ in
+            seen.value = budget
+            return chunkOutput([TranscriptSegment(start: 0, end: 1, text: "hi")])
+        }
+
+        _ = try await DualSourceTranscriber.transcribeDual(
+            mic: URL(fileURLWithPath: "/tmp/mic.caf"),
+            sys: nil,
+            timing: .init(micStartEpoch: 0, sysStartEpoch: nil),
+            cfg: AppConfig(),
+            budget: .performance,
+            progress: .init(mic: nil, sys: nil)
+        )
+
+        #expect(seen.value == .performance)
+        }
+    }
+
+    @Test("Dual path propagates the detected language from chunk output")
+    func dualPathPropagatesDetectedLanguage() async throws {
+        try await dualSourceTranscriberMockLock.withLock {
+        let original = DualSourceTranscriber.transcribeChunkFunc
+        let originalAudible = DualSourceTranscriber.ensureAudibleFunc
+        defer {
+            DualSourceTranscriber.transcribeChunkFunc = original
+            DualSourceTranscriber.ensureAudibleFunc = originalAudible
+        }
+        DualSourceTranscriber.ensureAudibleFunc = { _ in }
+
+        DualSourceTranscriber.transcribeChunkFunc = { url, _, _, _, _, _, _ in
+            chunkOutput(
+                [TranscriptSegment(start: 0, end: 1, text: "hola")],
+                language: url.path.contains("mic") ? "es" : nil
+            )
+        }
+
+        let output = try await DualSourceTranscriber.transcribeDual(
+            mic: URL(fileURLWithPath: "/tmp/mic.caf"),
+            sys: URL(fileURLWithPath: "/tmp/sys.caf"),
+            timing: .init(micStartEpoch: 0, sysStartEpoch: 0),
+            cfg: AppConfig(),
+            progress: .init(mic: nil, sys: nil)
+        )
+
+        #expect(output.detectedLanguage == "es")
+        }
+    }
+}
+
+/// Builds a chunk-transcriber output from plain segments for seam mocks.
+private func chunkOutput(
+    _ segments: [TranscriptSegment],
+    language: String? = nil
+) -> ChunkedTranscriber.TranscriptionOutput {
+    ChunkedTranscriber.TranscriptionOutput(segments: segments, detectedLanguage: language)
+}
+
+/// Minimal actor-free mutable box for capturing values from `@Sendable` seams.
+private final class SendableBox<Value>: @unchecked Sendable {
+    var value: Value
+    init(_ value: Value) { self.value = value }
 }

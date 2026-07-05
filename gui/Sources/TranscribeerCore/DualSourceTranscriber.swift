@@ -48,6 +48,7 @@ public enum DualSourceTranscriber {
         session: URL,
         cfg: AppConfig,
         timing: TimingInfo,
+        budget: TranscriptionBudget = .conservative,
         onMicProgress: (@Sendable (Double) -> Void)? = nil,
         onSysProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> TranscriptionOutput {
@@ -63,6 +64,7 @@ public enum DualSourceTranscriber {
                 sys: hasSys ? sysURL : nil,
                 timing: timing,
                 cfg: cfg,
+                budget: budget,
                 progress: .init(mic: onMicProgress, sys: onSysProgress)
             )
         }
@@ -71,6 +73,7 @@ public enum DualSourceTranscriber {
         return try await transcribeLegacyMixed(
             mixed: mixedURL,
             cfg: cfg,
+            budget: budget,
             onProgress: onMicProgress
         )
     }
@@ -86,9 +89,8 @@ public enum DualSourceTranscriber {
     }
 
     /// Swappable chunk transcription backend for unit testing.
-    /// Returns plain segments; detected language is not threaded through
-    /// this seam so tests remain simple. The production path captures language
-    /// via `transcribeLegacyMixed` → `ChunkedTranscriber.TranscriptionOutput`.
+    /// Returns the full `ChunkedTranscriber.TranscriptionOutput` so the dual
+    /// path can propagate WhisperKit's detected language alongside segments.
     internal static var transcribeChunkFunc: (
         _ audioURL: URL,
         _ modelName: String,
@@ -97,7 +99,7 @@ public enum DualSourceTranscriber {
         _ language: String,
         _ budget: TranscriptionBudget,
         _ onProgress: (@Sendable (Double) -> Void)?
-    ) async throws -> [TranscriptSegment] = defaultTranscribeChunk
+    ) async throws -> ChunkedTranscriber.TranscriptionOutput = defaultTranscribeChunk
 
     // swiftlint:disable:next function_parameter_count
     private static func defaultTranscribeChunk(
@@ -108,8 +110,8 @@ public enum DualSourceTranscriber {
         language: String,
         budget: TranscriptionBudget,
         onProgress: (@Sendable (Double) -> Void)?
-    ) async throws -> [TranscriptSegment] {
-        let output = try await ChunkedTranscriber.transcribe(
+    ) async throws -> ChunkedTranscriber.TranscriptionOutput {
+        try await ChunkedTranscriber.transcribe(
             audioURL: audioURL,
             modelName: modelName,
             modelRepo: modelRepo,
@@ -118,7 +120,6 @@ public enum DualSourceTranscriber {
             budget: budget,
             onProgress: onProgress
         )
-        return output.segments
     }
 
     /// Swappable audio-validation backend for unit testing.
@@ -138,6 +139,7 @@ public enum DualSourceTranscriber {
         sys: URL?,
         timing: TimingInfo,
         cfg: AppConfig,
+        budget: TranscriptionBudget = .conservative,
         progress: ProgressCallbacks
     ) async throws -> TranscriptionOutput {
         if timing.micStartEpoch == nil && timing.sysStartEpoch == nil {
@@ -152,7 +154,7 @@ public enum DualSourceTranscriber {
         // didn't speak), skip just that source instead of failing the whole
         // transcription. Without this, a common "one participant quiet" case
         // would hard-fail the pipeline.
-        async let micTask: [TranscriptSegment]? = {
+        async let micTask: ChunkedTranscriber.TranscriptionOutput? = {
             guard let mic else { return nil }
             try Task.checkCancellation()
             do {
@@ -167,12 +169,12 @@ public enum DualSourceTranscriber {
                 modelRepo,
                 modelsDir,
                 cfg.language,
-                .conservative,
+                budget,
                 progress.mic
             )
         }()
 
-        async let sysTask: [TranscriptSegment]? = {
+        async let sysTask: ChunkedTranscriber.TranscriptionOutput? = {
             guard let sys else { return nil }
             try Task.checkCancellation()
             do {
@@ -187,13 +189,16 @@ public enum DualSourceTranscriber {
                 modelRepo,
                 modelsDir,
                 cfg.language,
-                .conservative,
+                budget,
                 progress.sys
             )
         }()
 
-        let micSegments = try await micTask
-        let sysSegments = try await sysTask
+        let micOutput = try await micTask
+        let sysOutput = try await sysTask
+        let micSegments = micOutput?.segments
+        let sysSegments = sysOutput?.segments
+        let detectedLanguage = micOutput?.detectedLanguage ?? sysOutput?.detectedLanguage
 
         // Both sources came back empty — nothing to transcribe. Surface an
         // `.silent`-equivalent so the caller can treat it as a failed session.
@@ -221,11 +226,9 @@ public enum DualSourceTranscriber {
         )
 
         let segments = merge(mic: micLabeled, sys: sysLabeled, otherLabel: cfg.audio.otherLabel)
-        // The dual path uses `transcribeChunkFunc` (a test seam) which returns
-        // plain `[TranscriptSegment]` without language info. Detected language
-        // is not propagated here; it is captured via the legacy-mixed path and
-        // `TranscriptionService.lastDetectedLanguage`.
-        return TranscriptionOutput(segments: segments, detectedLanguage: nil)
+        // Detected language flows from whichever source WhisperKit auto-detected
+        // first (mic preferred); `nil` when an explicit language code was used.
+        return TranscriptionOutput(segments: segments, detectedLanguage: detectedLanguage)
     }
 
     private static func labelMicSegments(
@@ -326,6 +329,7 @@ public enum DualSourceTranscriber {
     private static func transcribeLegacyMixed(
         mixed: URL,
         cfg: AppConfig,
+        budget: TranscriptionBudget = .conservative,
         onProgress: (@Sendable (Double) -> Void)?
     ) async throws -> TranscriptionOutput {
         try AudioValidation.ensureAudibleSignal(at: mixed)
@@ -336,6 +340,7 @@ public enum DualSourceTranscriber {
             modelRepo: cfg.whisperModelRepo.isEmpty ? nil : cfg.whisperModelRepo,
             downloadBase: AppConfig.modelsDir,
             language: cfg.language,
+            budget: budget,
             onProgress: onProgress
         )
         let segments = chunkedOutput.segments

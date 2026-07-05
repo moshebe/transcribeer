@@ -68,7 +68,10 @@ struct PipelineIntegrationTests {
                 sysText: "Customer responds"
             )
             DualSourceTranscriber.transcribeChunkFunc = { url, _, _, _, _, _, _ in
-                url.lastPathComponent.contains("mic") ? micSegs : sysSegs
+                ChunkedTranscriber.TranscriptionOutput(
+                    segments: url.lastPathComponent.contains("mic") ? micSegs : sysSegs,
+                    detectedLanguage: nil
+                )
             }
             DualSourceTranscriber.ensureAudibleFunc = { _ in }
             defer { resetDualSourceMocks() }
@@ -235,7 +238,7 @@ private func resetDualSourceMocks() {
             budget: budget,
             onProgress: prog
         )
-        return out.segments
+        return out
     }
     DualSourceTranscriber.ensureAudibleFunc = { url in
         try AudioValidation.ensureAudibleSignal(at: url)
