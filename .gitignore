@@ -7,6 +7,7 @@ __pycache__/
 
 # Swift build artifacts
 gui/.build/
+capture-bin
 
 # Distribution output (DMGs built locally; CI uploads these to releases)
 dist/
