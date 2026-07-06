@@ -1,4 +1,5 @@
 import Testing
+import TranscribeerCore
 @testable import TranscribeerApp
 
 struct TranscriptFormatterTests {

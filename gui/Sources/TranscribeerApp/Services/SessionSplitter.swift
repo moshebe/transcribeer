@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import os
+import TranscribeerCore
 
 /// Splits an existing recording at a given timestamp into two sessions:
 /// the original is truncated to `[0, splitTime]` and a freshly created
@@ -162,9 +163,9 @@ enum SessionSplitter {
     }
 
     /// Rebuild a transcript string directly from labelled segments without
-    /// renumbering speakers (unlike `TranscriptFormatter.format`, which
-    /// rewrites speaker IDs). Splitting must preserve existing labels so the
-    /// new session's speakers line up with the original's.
+    /// merging or renumbering speakers (unlike `TranscriptFormatter.formatDual`,
+    /// which merges consecutive same-speaker lines). Splitting must preserve
+    /// existing lines and labels so the new session lines up with the original.
     private static func renderTranscript(_ segments: [LabeledSegment]) -> String {
         guard !segments.isEmpty else { return "" }
         return segments.map { seg in

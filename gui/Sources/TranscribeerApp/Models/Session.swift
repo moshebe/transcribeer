@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import TranscribeerCore
 
 /// Represents a single recording session directory.
 struct Session: Identifiable, Equatable {

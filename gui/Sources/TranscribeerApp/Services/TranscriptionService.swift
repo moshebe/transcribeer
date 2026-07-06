@@ -330,9 +330,8 @@ final class TranscriptionService {
             lastDetectedLanguage = detected
         }
 
-        let appSegments = output.segments.map(Self.toLabeledSegment)
-        liveSegments = appSegments.map(Self.toLiveSegment)
-        return TranscriptFormatter.formatDual(appSegments)
+        liveSegments = output.segments.map(Self.toLiveSegment)
+        return TranscriptFormatter.formatDual(output.segments)
     }
 
     // MARK: - Cloud (OpenAI / Gemini)
@@ -566,10 +565,6 @@ final class TranscriptionService {
 
 @MainActor
 extension TranscriptionService {
-    static func toLabeledSegment(_ seg: TranscribeerCore.LabeledSegment) -> LabeledSegment {
-        LabeledSegment(start: seg.start, end: seg.end, speaker: seg.speaker, text: seg.text)
-    }
-
     static func toLiveSegment(_ seg: LabeledSegment) -> TranscriptSegment {
         TranscriptSegment(start: seg.start, end: seg.end, text: seg.text, speaker: seg.speaker)
     }
