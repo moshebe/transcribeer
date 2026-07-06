@@ -257,11 +257,16 @@ struct TranscribeerApp: App {
     // MARK: - Lifecycle
 
     private func onFirstAppear() {
-        let trashed = SessionManager.gcAbandonedSessions(sessionsDir: config.expandedSessionsDir)
+        let sessionsDir = config.expandedSessionsDir
+        let ffmpegPath = config.audio.ffmpegPath
+        let trashed = SessionManager.gcAbandonedSessions(sessionsDir: sessionsDir)
         if !trashed.isEmpty {
             logger.info(
                 "gc: trashed \(trashed.count, privacy: .public) abandoned session(s) at launch",
             )
+        }
+        Task {
+            await maintainHistoricalAudioSidecars(sessionsDir: sessionsDir, ffmpegPath: ffmpegPath)
         }
         runner.transcriptionService.resourceGovernor = resourceGovernor
         meetingDetector.start()
@@ -551,5 +556,27 @@ struct TranscribeerApp: App {
                 SessionManager.setName(session, title)
             }
         }
+    }
+}
+
+private extension TranscribeerApp {
+    /// Compact raw capture sidecars left over from sessions recorded before
+    /// this feature existed (or before ffmpeg was configured). Runs once at
+    /// launch as background maintenance; a no-op when there's nothing to do.
+    func maintainHistoricalAudioSidecars(sessionsDir: String, ffmpegPath: String) async {
+        let report = await SourceSidecarCompressor.maintainHistoricalSessions(
+            in: sessionsDir,
+            ffmpegPath: ffmpegPath
+        )
+        guard report.didWork else { return }
+        logger.info(
+            """
+            sidecar maintenance: scanned=\(report.sessionsScanned, privacy: .public) \
+            raw_sessions=\(report.sessionsWithRawSidecars, privacy: .public) \
+            compressed=\(report.compressedFiles, privacy: .public) \
+            removed=\(report.removedFiles, privacy: .public) \
+            freed=\(report.bytesFreed, privacy: .public) failures=\(report.failed.count, privacy: .public)
+            """
+        )
     }
 }

@@ -277,7 +277,7 @@ final class PipelineRunner {
         }
 
         if config.pipelineMode == "record-only" {
-            finishSession(session, config: config)
+            await finishSession(session, config: config)
             return
         }
 
@@ -302,7 +302,7 @@ final class PipelineRunner {
         ) else { return }
 
         if config.pipelineMode == "record+transcribe" {
-            finishSession(session, config: config)
+            await finishSession(session, config: config)
             return
         }
 
@@ -315,7 +315,7 @@ final class PipelineRunner {
             logger: logger
         )
 
-        finishSession(session, config: config)
+        await finishSession(session, config: config)
     }
 
     // MARK: - Track 4.3 post-recording prompt
@@ -357,7 +357,7 @@ final class PipelineRunner {
             return false
         case .saveOnly:
             logger.log("post-recording: save-only")
-            finishSession(session, config: config)
+            await finishSession(session, config: config)
             return false
         case .transcribeOnly:
             logger.log("post-recording: transcribe-only")
@@ -367,7 +367,7 @@ final class PipelineRunner {
                 transcriptPath: transcriptPath,
                 logger: logger
             ) else { return false }
-            finishSession(session, config: config)
+            await finishSession(session, config: config)
             return false
         case .transcribeAndSummarize:
             logger.log("post-recording: transcribe-and-summarize")
@@ -541,12 +541,50 @@ final class PipelineRunner {
         return accumulated
     }
 
-    private func finishSession(_ session: URL, config: AppConfig) {
+    private func finishSession(_ session: URL, config: AppConfig) async {
         stopParticipantsCapture()
+        // Compact the raw capture sidecars before announcing `.done`, so a
+        // re-transcribe triggered off the finished session never resolves a
+        // raw `.caf` that compaction is about to delete.
+        await compactSourceSidecars(in: session, ffmpegPath: config.audio.ffmpegPath)
         state = .done(sessionPath: session.path)
         NotificationManager.notifyDone(sessionName: SessionManager.displayName(session))
         Task {
             await IntegrationDispatcher.dispatch(session: session, config: config)
+        }
+    }
+}
+
+// MARK: - Source sidecar compaction
+
+private extension PipelineRunner {
+    /// Compress the raw per-source capture sidecars to `.m4a` and drop the
+    /// originals once transcription no longer needs them. Runs as post-pipeline
+    /// cleanup; failures are logged and never block the session.
+    func compactSourceSidecars(in session: URL, ffmpegPath: String) async {
+        let logger = SessionLogger(logPath: session.appendingPathComponent("run.log"))
+        let compression = await SourceSidecarCompressor.compressSession(
+            in: session,
+            ffmpegPath: ffmpegPath
+        )
+        logSidecarCompression(compression, logger: logger)
+
+        let cleanup = SessionManager.removeCaptureAudioSidecars(in: session)
+        if cleanup.bytesFreed > 0 {
+            logger.log("removed raw capture sidecars \(cleanup.bytesFreed) bytes")
+        }
+    }
+
+    func logSidecarCompression(
+        _ report: SourceSidecarCompressor.Report,
+        logger: SessionLogger
+    ) {
+        if report.compressedCount > 0 {
+            let methods = report.methods.joined(separator: ",")
+            logger.log("compressed source sidecars count=\(report.compressedCount) methods=\(methods)")
+        }
+        for failure in report.failed {
+            logger.log("source sidecar compression failed: \(failure)")
         }
     }
 }
