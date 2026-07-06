@@ -538,6 +538,7 @@ final class PipelineRunner {
             usage: tokenUsage,
             duration: Date().timeIntervalSince(startedAt),
         )
+        await SessionDescriptionWriter.write(session: session, summary: accumulated, config: config)
         return accumulated
     }
 

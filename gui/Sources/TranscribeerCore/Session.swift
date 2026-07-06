@@ -182,7 +182,9 @@ public enum SessionManager {
     }
 
     private static func snippet(_ dir: URL) -> String {
-        for fname in ["summary.md", "transcript.txt"] {
+        // Prefer the LLM-authored one-sentence description written for the
+        // sidebar; fall back to the summary then the transcript.
+        for fname in ["description.txt", "summary.md", "transcript.txt"] {
             let path = dir.appendingPathComponent(fname)
             guard let text = try? String(contentsOf: path, encoding: .utf8) else { continue }
             for line in text.components(separatedBy: .newlines) {

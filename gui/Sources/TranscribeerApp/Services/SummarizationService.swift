@@ -30,6 +30,17 @@ enum SummarizationService {
         Respond in markdown.
         """
 
+    /// System prompt for the one-sentence sidebar description. Kept short and
+    /// strict on format because the output is shown verbatim in the history
+    /// sidebar — markdown, quotes, or multi-line replies would look broken.
+    static let descriptionPrompt = """
+        Summarize the following meeting summary in exactly one sentence.
+        Reply with that single sentence and nothing else: no markdown, no \
+        headings, no bullets, no quotes, no prefixes like "Summary:". Use the \
+        same language as the input. Aim for 8\u{2013}20 words. Describe what \
+        the meeting was about and, if clear, its outcome.
+        """
+
     /// Stream a summary as incremental events. Text fragments arrive as
     /// `.textDelta`; the stream ends with a `.completed` carrying token usage
     /// when the provider reported it. Consumers concatenate the `.textDelta`
@@ -111,6 +122,64 @@ enum SummarizationService {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".transcribeer/prompts/\(name).md")
         return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Generate a single-sentence description of a meeting from its summary.
+    ///
+    /// Runs as a small follow-up call after the main summary so it can see the
+    /// same content the user sees. Reuses `streamSummarize` with the strict
+    /// `descriptionPrompt` and collapses the reply to one clean sentence.
+    static func generateDescription(
+        summary: String,
+        backend: String,
+        model: String,
+        ollamaHost: String = "http://localhost:11434",
+    ) async throws -> String {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let stream = try await streamSummarize(
+            transcript: trimmed,
+            backend: backend,
+            model: model,
+            ollamaHost: ollamaHost,
+            prompt: descriptionPrompt,
+        )
+        var accumulated = ""
+        for try await event in stream {
+            try Task.checkCancellation()
+            if case let .textDelta(fragment) = event {
+                accumulated += fragment
+            }
+        }
+        return sanitizeOneSentence(accumulated)
+    }
+
+    /// Collapse a model reply to a single clean sentence: strip outer quotes,
+    /// markdown markers, leading bullets / headings, and join wrapped lines
+    /// with a single space. Exposed `internal` so tests can pin the behaviour
+    /// without going through the LLM.
+    static func sanitizeOneSentence(_ raw: String) -> String {
+        let lines = raw
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let joined = lines.joined(separator: " ")
+        let stripChars = CharacterSet(charactersIn: "\"'`*_ \t")
+        var result = joined.trimmingCharacters(in: stripChars)
+        // Drop a leading markdown heading marker (e.g. `# `, `## `) or bullet.
+        while let first = result.first, "#-*>".contains(first) {
+            result.removeFirst()
+            result = result.trimmingCharacters(in: stripChars)
+        }
+        // Drop a leading label like "Summary:" / "Description:" the model
+        // sometimes adds despite the prompt.
+        if let colon = result.firstIndex(of: ":"),
+           result.distance(from: result.startIndex, to: colon) <= 20,
+           result[..<colon].allSatisfy({ $0.isLetter || $0.isWhitespace }) {
+            result = String(result[result.index(after: colon)...])
+                .trimmingCharacters(in: stripChars)
+        }
+        return result.trimmingCharacters(in: stripChars)
     }
 
     // MARK: - Private
