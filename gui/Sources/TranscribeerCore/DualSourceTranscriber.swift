@@ -207,11 +207,27 @@ public enum DualSourceTranscriber {
             )
         }
 
+        // Detected language flows from whichever source WhisperKit auto-detected
+        // first (mic preferred); `nil` when an explicit language code was used.
+
+        // Without mic diarization, offset + label + interleave is exactly what
+        // the cloud path's `mergeAndTag` does — reuse it rather than duplicate.
+        guard cfg.audio.diarizeMicMultiuser else {
+            let segments = mergeAndTag(
+                micSegments: micSegments,
+                sysSegments: sysSegments,
+                timing: timing,
+                selfLabel: cfg.audio.selfLabel,
+                otherLabel: cfg.audio.otherLabel
+            )
+            return TranscriptionOutput(segments: segments, detectedLanguage: detectedLanguage)
+        }
+
         let sessionStart = min(timing.micStartEpoch ?? 0, timing.sysStartEpoch ?? 0)
         let micOffset = (timing.micStartEpoch ?? 0) - sessionStart
         let sysOffset = (timing.sysStartEpoch ?? 0) - sessionStart
 
-        let micLabeled = try await labelMicSegments(
+        let micLabeled = try await diarizeAndLabelMic(
             micSegments: micSegments,
             micURL: mic,
             offset: micOffset,
@@ -222,14 +238,11 @@ public enum DualSourceTranscriber {
             offset: sysOffset,
             otherLabel: cfg.audio.otherLabel
         )
-
         let segments = merge(mic: micLabeled, sys: sysLabeled, otherLabel: cfg.audio.otherLabel)
-        // Detected language flows from whichever source WhisperKit auto-detected
-        // first (mic preferred); `nil` when an explicit language code was used.
         return TranscriptionOutput(segments: segments, detectedLanguage: detectedLanguage)
     }
 
-    private static func labelMicSegments(
+    private static func diarizeAndLabelMic(
         micSegments: [TranscriptSegment]?,
         micURL: URL?,
         offset: Double,
@@ -237,26 +250,22 @@ public enum DualSourceTranscriber {
     ) async throws -> [LabeledSegment] {
         guard let micSegments, let micURL else { return [] }
 
-        if cfg.audio.diarizeMicMultiuser {
-            let diarSegments = try await diarizeFunc(
-                micURL,
-                cfg.numSpeakers > 0 ? cfg.numSpeakers : nil
+        let diarSegments = try await diarizeFunc(
+            micURL,
+            cfg.numSpeakers > 0 ? cfg.numSpeakers : nil
+        )
+        let assigned = TranscriptFormatter.assignSpeakers(
+            whisperSegments: micSegments,
+            diarSegments: diarSegments
+        )
+        return assigned.map { seg in
+            LabeledSegment(
+                start: seg.start + offset,
+                end: seg.end + offset,
+                speaker: seg.speaker,
+                text: seg.text
             )
-            let assigned = TranscriptFormatter.assignSpeakers(
-                whisperSegments: micSegments,
-                diarSegments: diarSegments
-            )
-            return assigned.map { seg in
-                LabeledSegment(
-                    start: seg.start + offset,
-                    end: seg.end + offset,
-                    speaker: seg.speaker,
-                    text: seg.text
-                )
-            }
         }
-
-        return micSegments.map { shifted($0, offset: offset, speaker: cfg.audio.selfLabel) }
     }
 
     private static func labelSysSegments(

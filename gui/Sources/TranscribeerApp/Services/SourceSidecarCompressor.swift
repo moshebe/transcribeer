@@ -164,19 +164,8 @@ enum SourceSidecarCompressor {
         }
         return CompressedFile(
             method: result.backendID,
-            rawBytes: fileSize(raw),
+            rawBytes: SourceAudioFiles.byteCount(raw),
             compressedBytes: result.outputBytes
         )
-    }
-
-    private static func fileSize(_ url: URL) -> UInt64 {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
-            return 0
-        }
-        return switch attributes[.size] {
-        case let size as UInt64: size
-        case let size as NSNumber: size.uint64Value
-        default: 0
-        }
     }
 }

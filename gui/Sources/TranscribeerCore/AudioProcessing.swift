@@ -17,69 +17,59 @@ public protocol AudioProcessingBackend: Sendable {
     func transcode(_ request: AudioTranscodeRequest) async throws -> AudioTranscodeResult
 }
 
-/// Audio codec requested for transcode output.
-public enum AudioProcessingCodec: String, CaseIterable, Sendable, Equatable {
-    /// AAC-LC, used by compact M4A sidecars and cloud-upload chunks.
-    case aac
-}
-
-/// Container requested for transcode output.
-public enum AudioProcessingContainer: String, CaseIterable, Sendable, Equatable {
-    /// MPEG-4 audio container, normally with an `.m4a` extension.
-    case m4a
-
-    /// Default file extension for this container.
-    public var fileExtension: String { rawValue }
-}
-
-/// Channel layout requested for transcode output.
-public enum AudioProcessingChannelMode: Sendable, Equatable {
-    /// Keep the backend/source default channel layout.
-    case preserve
-    /// Downmix to one channel.
-    case mono
-    /// Upmix/downmix to two channels.
-    case stereo
-
-    /// Channel count for backends that accept a numeric channel argument.
-    public var channelCount: Int? {
-        switch self {
-        case .preserve: nil
-        case .mono: 1
-        case .stereo: 2
-        }
-    }
-}
-
 /// Request to transcode one audio file into another.
 ///
-/// Defaults mirror the current source-sidecar compression target: 16 kHz mono
-/// AAC in an M4A container at 48 kbps.
+/// The app's only transcode target is 16 kHz mono AAC in an M4A container;
+/// backends hardcode that codec/container/channel layout. Sample rate and
+/// bitrate stay tunable. Defaults mirror the source-sidecar compression target.
 public struct AudioTranscodeRequest: Sendable, Equatable {
     public let inputURL: URL
     public let outputURL: URL
-    public let codec: AudioProcessingCodec
-    public let container: AudioProcessingContainer
-    public let channelMode: AudioProcessingChannelMode
     public let sampleRate: Double?
     public let bitrate: Int?
 
     public init(
         inputURL: URL,
         outputURL: URL,
-        codec: AudioProcessingCodec = .aac,
-        container: AudioProcessingContainer = .m4a,
-        channelMode: AudioProcessingChannelMode = .mono,
         sampleRate: Double? = 16_000,
         bitrate: Int? = 48_000
     ) {
         self.inputURL = inputURL
         self.outputURL = outputURL
-        self.codec = codec
-        self.container = container
-        self.channelMode = channelMode
         self.sampleRate = sampleRate
         self.bitrate = bitrate
+    }
+}
+
+/// Shared atomic-output helpers for audio-processing backends: write to a
+/// hidden sibling temp file, then swap it into place in one step so a crashed
+/// transcode never leaves a half-written destination.
+enum AudioTranscodeIO {
+    /// Hidden sibling `.m4a` temp path next to `outputURL`.
+    static func temporaryOutputURL(for outputURL: URL) -> URL {
+        outputURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(outputURL.lastPathComponent).\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+    }
+
+    static func replace(tempURL: URL, outputURL: URL) throws {
+        do {
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                _ = try FileManager.default.replaceItemAt(
+                    outputURL,
+                    withItemAt: tempURL,
+                    backupItemName: nil,
+                    options: []
+                )
+            } else {
+                try FileManager.default.moveItem(at: tempURL, to: outputURL)
+            }
+        } catch {
+            throw AudioProcessingError.outputReplacementFailed(
+                outputURL: outputURL,
+                message: error.localizedDescription
+            )
+        }
     }
 }
 

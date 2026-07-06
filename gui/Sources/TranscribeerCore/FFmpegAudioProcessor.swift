@@ -51,8 +51,8 @@ public struct FFmpegAudioProcessor: AudioProcessingBackend {
             throw AudioProcessingError.inputMissing(request.inputURL)
         }
 
-        let inputBytes = fileSize(request.inputURL)
-        let tempURL = temporaryOutputURL(for: request.outputURL, container: request.container)
+        let inputBytes = SourceAudioFiles.byteCount(request.inputURL)
+        let tempURL = AudioTranscodeIO.temporaryOutputURL(for: request.outputURL)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         let arguments = commandArguments(for: request, outputURL: tempURL)
@@ -74,11 +74,11 @@ public struct FFmpegAudioProcessor: AudioProcessingBackend {
             throw AudioProcessingError.emptyOutput(request.outputURL)
         }
 
-        try replace(tempURL: tempURL, outputURL: request.outputURL)
+        try AudioTranscodeIO.replace(tempURL: tempURL, outputURL: request.outputURL)
         return AudioTranscodeResult(
             outputURL: request.outputURL,
             backendID: backendID,
-            outputBytes: fileSize(request.outputURL),
+            outputBytes: SourceAudioFiles.byteCount(request.outputURL),
             inputBytes: inputBytes
         )
     }
@@ -95,13 +95,11 @@ public struct FFmpegAudioProcessor: AudioProcessingBackend {
             "-i", request.inputURL.path,
             "-map", "0:a:0", "-vn",
         ]
-        if let channelCount = request.channelMode.channelCount {
-            arguments.append(contentsOf: ["-ac", String(channelCount)])
-        }
+        arguments.append(contentsOf: ["-ac", "1"])
         if let sampleRate = request.sampleRate {
             arguments.append(contentsOf: ["-ar", sampleRateArgument(sampleRate)])
         }
-        arguments.append(contentsOf: ["-c:a", codecArgument(request.codec)])
+        arguments.append(contentsOf: ["-c:a", "aac"])
         if let bitrate = request.bitrate {
             arguments.append(contentsOf: ["-b:a", bitrateArgument(bitrate)])
         }
@@ -177,32 +175,6 @@ public struct FFmpegAudioProcessor: AudioProcessingBackend {
         let configured = expand(configuredPath.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !configured.isEmpty else { return "ffmpeg executable was not found" }
         return "configured ffmpeg is not executable: \(configured)"
-    }
-
-    private func temporaryOutputURL(for outputURL: URL, container: AudioProcessingContainer) -> URL {
-        outputURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(outputURL.lastPathComponent).\(UUID().uuidString)")
-            .appendingPathExtension(container.fileExtension)
-    }
-
-    private func replace(tempURL: URL, outputURL: URL) throws {
-        do {
-            if FileManager.default.fileExists(atPath: outputURL.path) {
-                _ = try FileManager.default.replaceItemAt(
-                    outputURL,
-                    withItemAt: tempURL,
-                    backupItemName: nil,
-                    options: []
-                )
-            } else {
-                try FileManager.default.moveItem(at: tempURL, to: outputURL)
-            }
-        } catch {
-            throw AudioProcessingError.outputReplacementFailed(
-                outputURL: outputURL,
-                message: error.localizedDescription
-            )
-        }
     }
 
     private func sanitizedFailureDetail(
@@ -283,12 +255,6 @@ struct ProcessFFmpegCommandRunner: FFmpegCommandRunning {
             terminationStatus: process.terminationStatus,
             standardError: String(data: errorData, encoding: .utf8) ?? ""
         )
-    }
-}
-
-private func codecArgument(_ codec: AudioProcessingCodec) -> String {
-    switch codec {
-    case .aac: "aac"
     }
 }
 

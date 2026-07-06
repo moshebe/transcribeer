@@ -547,11 +547,7 @@ struct CuratedModelRow: View {
     }
 
     private var isInstalled: Bool {
-        guard let dl = downloader, let manifest = manifestEntry else {
-            // For non-Hebrew models: check standard WhisperKit snapshot dir via
-            // a lightweight folder existence check using the same path ModelCatalogService uses.
-            return false
-        }
+        guard let dl = downloader, let manifest = manifestEntry else { return false }
         return dl.isInstalled(manifest)
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import TranscribeerCore
 
 extension SessionManager {
     struct AudioSidecarCleanup: Equatable {
@@ -20,11 +21,11 @@ extension SessionManager {
         for sidecar in captureAudioSidecars {
             let raw = dir.appendingPathComponent(sidecar.raw)
             let compressed = dir.appendingPathComponent(sidecar.compressed)
-            guard fileManager.fileExists(atPath: raw.path), fileSize(compressed) > 0 else {
+            guard fileManager.fileExists(atPath: raw.path), SourceAudioFiles.isNonEmpty(compressed) else {
                 continue
             }
 
-            let size = fileSize(raw)
+            let size = SourceAudioFiles.byteCount(raw)
             do {
                 try fileManager.removeItem(at: raw)
                 removedFiles.append(sidecar.raw)
@@ -41,16 +42,4 @@ extension SessionManager {
         (raw: "audio.mic.caf", compressed: "audio.mic.m4a"),
         (raw: "audio.sys.caf", compressed: "audio.sys.m4a"),
     ]
-
-    private static func fileSize(_ url: URL) -> UInt64 {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
-            return 0
-        }
-
-        return switch attributes[.size] {
-        case let size as UInt64: size
-        case let size as NSNumber: size.uint64Value
-        default: 0
-        }
-    }
 }
