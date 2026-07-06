@@ -67,19 +67,6 @@ enum PromptProfileManager {
         notifyChanged()
     }
 
-    /// Rename a profile on disk. Default cannot be renamed.
-    static func rename(from oldName: String, to newName: String) throws {
-        guard oldName != defaultName else { throw ProfileError.invalidName("reserved") }
-        let trimmed = try validateName(newName)
-        if oldName == trimmed { return }
-        let dst = fileURL(for: trimmed)
-        if FileManager.default.fileExists(atPath: dst.path) {
-            throw ProfileError.alreadyExists(trimmed)
-        }
-        try FileManager.default.moveItem(at: fileURL(for: oldName), to: dst)
-        notifyChanged()
-    }
-
     /// Delete a profile's on-disk file. For `default` this clears the user's
     /// override so the built-in prompt is used again; the profile entry stays
     /// in the list. For other profiles the file is removed entirely.
@@ -213,12 +200,10 @@ enum PromptProfileManager {
 
     enum ProfileError: LocalizedError {
         case invalidName(String)
-        case alreadyExists(String)
 
         var errorDescription: String? {
             switch self {
             case let .invalidName(reason): "Invalid profile name (\(reason))."
-            case let .alreadyExists(name): "A profile named \"\(name)\" already exists."
             }
         }
     }

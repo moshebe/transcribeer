@@ -33,36 +33,4 @@ enum AppState: Equatable {
         default: return false
         }
     }
-
-    var menuBarIcon: String {
-        switch self {
-        case .idle: return "mic"
-        case .recording: return "record.circle.fill"
-        case .transcribing, .summarizing: return "ellipsis.circle"
-        case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation:
-            return "questionmark.circle"
-        case .done: return "checkmark.circle"
-        case .error: return "exclamationmark.triangle"
-        }
-    }
-
-    var statusText: String {
-        switch self {
-        case .idle: return ""
-        case .recording(let start): return Self.recordingText(from: start)
-        case .awaitingPostRecordingChoice: return "⏸ Recording saved — choose action"
-        case .transcribing: return "📝 Transcribing…"
-        case .awaitingLongRecordingConfirmation: return "⏸ Long recording — confirm"
-        case .summarizing: return "🤔 Summarizing…"
-        case .done: return "✓ Done"
-        case .error(let msg): return "⚠ \(msg)"
-        }
-    }
-
-    private static func recordingText(from start: Date) -> String {
-        let elapsed = Int(Date().timeIntervalSince(start))
-        let minutes = elapsed / 60
-        let seconds = elapsed % 60
-        return String(format: "⏺ Recording  %02d:%02d", minutes, seconds)
-    }
 }

@@ -115,8 +115,6 @@ struct ScheduledTranscriptionServiceTests {
             hasSummary: hasSummary,
             startedAt: date,
             endedAt: nil,
-            transcriptionUsage: nil,
-            summarizationUsage: nil,
         )
     }
 

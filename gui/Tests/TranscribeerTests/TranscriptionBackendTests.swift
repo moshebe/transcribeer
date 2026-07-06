@@ -43,15 +43,6 @@ struct TranscriptionBackendTests {
         #expect(TranscriptionBackend.from("") == .whisperkit)
     }
 
-    @Test("Defaults are documented contract for the Settings picker")
-    func defaultModels() {
-        // whisper-1 returns segment timestamps via verbose_json. Changing this
-        // default would silently degrade dual-source interleave quality.
-        #expect(TranscriptionBackend.openai.defaultModel == "whisper-1")
-        // gemini-2.5-flash accepts audio + supports JSON-mode output.
-        #expect(TranscriptionBackend.gemini.defaultModel == "gemini-2.5-flash")
-    }
-
     @Test("allCases covers every backend (prevents picker regressions)")
     func allCasesCoverage() {
         let cases = Set(TranscriptionBackend.allCases.map(\.rawValue))

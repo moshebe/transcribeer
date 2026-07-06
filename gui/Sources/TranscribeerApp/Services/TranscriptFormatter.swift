@@ -18,65 +18,8 @@ struct TranscriptLine: Identifiable, Hashable {
     let text: String
 }
 
-/// Ports assign_speakers() and format_output() from Python transcribe.py.
+/// Formats and parses transcript text for the transcript viewer.
 enum TranscriptFormatter {
-    /// Assign a speaker label to each whisper segment based on overlap
-    /// with diarization segments. Falls back to midpoint containment.
-    static func assignSpeakers(
-        whisperSegments: [TranscriptSegment],
-        diarSegments: [DiarSegment]
-    ) -> [LabeledSegment] {
-        whisperSegments.map { ws in
-            let wsMid = (ws.start + ws.end) / 2
-            var bestSpeaker = "UNKNOWN"
-            var bestOverlap = 0.0
-
-            for ds in diarSegments {
-                let overlap = max(0, min(ws.end, ds.end) - max(ws.start, ds.start))
-                if overlap > bestOverlap {
-                    bestOverlap = overlap
-                    bestSpeaker = ds.speaker
-                }
-                if bestOverlap == 0 && ds.start <= wsMid && wsMid <= ds.end {
-                    bestSpeaker = ds.speaker
-                }
-            }
-
-            return LabeledSegment(
-                start: ws.start,
-                end: ws.end,
-                speaker: bestSpeaker,
-                text: ws.text
-            )
-        }
-    }
-
-    /// Format labeled segments: rename speakers, merge consecutive
-    /// same-speaker lines, produce `[MM:SS -> MM:SS] Speaker N: text`.
-    static func format(_ segments: [LabeledSegment]) -> String {
-        guard !segments.isEmpty else { return "" }
-
-        // Build stable speaker name mapping (first-seen order).
-        var speakerMap: [String: String] = [:]
-        var counter = 1
-        for seg in segments
-            where seg.speaker != "UNKNOWN" && speakerMap[seg.speaker] == nil {
-            speakerMap[seg.speaker] = "Speaker \(counter)"
-            counter += 1
-        }
-        speakerMap["UNKNOWN"] = "???"
-
-        let renamed = segments.map { seg in
-            MergedLine(
-                start: seg.start,
-                end: seg.end,
-                speaker: speakerMap[seg.speaker] ?? seg.speaker,
-                text: seg.text
-            )
-        }
-        return render(mergeConsecutive(renamed))
-    }
-
     /// Strip Whisper special tokens (e.g. `<|startoftranscript|>`, `<|he|>`,
     /// `<|0.00|>`, `<|endoftext|>`) and collapse whitespace.
     ///
