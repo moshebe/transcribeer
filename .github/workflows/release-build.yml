@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       tag:
@@ -15,17 +12,9 @@ permissions:
   contents: write  # create GitHub Release + upload assets
 
 jobs:
-  guard:
-    name: Check trigger
-    runs-on: ubuntu-latest
-    if: github.event_name != 'workflow_dispatch'
-    steps:
-      - run: echo "Release only runs via workflow_dispatch. Skipping."
-
   build-dmg:
     name: Build DMG
     runs-on: macos-latest
-    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout
