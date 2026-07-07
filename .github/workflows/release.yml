@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:
@@ -15,6 +18,7 @@ jobs:
   build-dmg:
     name: Build DMG
     runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout
