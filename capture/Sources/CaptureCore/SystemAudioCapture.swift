@@ -350,16 +350,6 @@ public final class SystemAudioCapture: @unchecked Sendable {
         return deviceID
     }
 
-    /// Returns a list of available output (speaker) audio devices.
-    public static func availableOutputDevices() -> [(id: AudioDeviceID, name: String)] {
-        AudioDevices.availableOutputDevices().map { (id: $0.id, name: $0.name) }
-    }
-
-    /// Get the stable UID string for an output device.
-    public static func outputDeviceUID(for deviceID: AudioDeviceID) throws -> String {
-        try deviceUID(for: deviceID)
-    }
-
     /// Resolve a stable CoreAudio UID string back to the current
     /// AudioDeviceID, if the device is connected.
     public static func outputDeviceID(forUID uid: String) -> AudioDeviceID? {

@@ -1,5 +1,4 @@
 GITHUB_USER  = moshebe
-BIN_DIR      = $(HOME)/.transcribeer/bin
 APP_ENTITLEMENTS = gui/Transcribeer.entitlements.plist
 # Code signing identity. Defaults to a local self-signed cert "Transcribeer Dev"
 # so TCC permissions (microphone, system audio recording) persist across rebuilds.
@@ -312,7 +311,7 @@ build-dev: gui-build
 	fi; \
 	set -e; \
 	mkdir -p $(APP_MACOS) $(APP_RESOURCES); \
-	rm -f $(APP_MACOS)/capture-bin $(APP_MACOS)/TranscribeerApp.unsigned; \
+	rm -f $(APP_MACOS)/TranscribeerApp.unsigned; \
 	: "Atomic replace: copy to a sibling then rename(2). The running app's"; \
 	: "mmap keeps the old inode alive (unaffected) while the new file gets"; \
 	: "a fresh inode. In-place cp would mutate the live inode's pages and"; \

@@ -50,21 +50,13 @@ enum CloudTranscriptionCoordinator {
                 probeSeconds: 0
             )
         }
-        let coreLabeled = DualSourceTranscriber.mergeAndTag(
+        return DualSourceTranscriber.mergeAndTag(
             micSegments: mic,
             sysSegments: sys,
             timing: cfg.timing,
             selfLabel: cfg.selfLabel,
             otherLabel: cfg.otherLabel
         )
-        return coreLabeled.map { seg in
-            LabeledSegment(
-                start: seg.start,
-                end: seg.end,
-                speaker: seg.speaker,
-                text: seg.text
-            )
-        }
     }
 
     /// Single-file legacy path: tag every segment with the generic "Speaker"

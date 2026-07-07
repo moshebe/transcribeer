@@ -10,20 +10,8 @@ struct AudioProcessingTests {
             outputURL: URL(fileURLWithPath: "/tmp/output.m4a")
         )
 
-        #expect(request.codec == .aac)
-        #expect(request.container == .m4a)
-        #expect(request.container.fileExtension == "m4a")
-        #expect(request.channelMode == .mono)
-        #expect(request.channelMode.channelCount == 1)
         #expect(request.sampleRate == 16_000)
         #expect(request.bitrate == 48_000)
-    }
-
-    @Test("Channel modes expose backend channel counts")
-    func channelModesExposeCounts() {
-        #expect(AudioProcessingChannelMode.preserve.channelCount == nil)
-        #expect(AudioProcessingChannelMode.mono.channelCount == 1)
-        #expect(AudioProcessingChannelMode.stereo.channelCount == 2)
     }
 
     @Test("Backend availability factories preserve probe details")

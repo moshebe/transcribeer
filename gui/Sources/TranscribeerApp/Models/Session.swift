@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import TranscribeerCore
 
 /// Represents a single recording session directory.
 struct Session: Identifiable, Equatable {
@@ -29,10 +30,6 @@ struct Session: Identifiable, Equatable {
     /// same cases as `startedAt` and also while a recording is still in
     /// progress.
     let endedAt: Date?
-    /// Token/cost record for the last transcription, or `nil` if not tracked.
-    let transcriptionUsage: PipelineUsage?
-    /// Token/cost record for the last summarization, or `nil` if not tracked.
-    let summarizationUsage: PipelineUsage?
 }
 
 /// A single meeting participant observed during a recording session.
@@ -241,10 +238,6 @@ enum SessionManager {
             hasSummary: hasSummary,
             startedAt: startedAt,
             endedAt: parseDate(meta["endedAt"]),
-            transcriptionUsage: (meta["transcription_meta"] as? [String: Any])
-                .flatMap(PipelineUsage.init(dict:)),
-            summarizationUsage: (meta["summarization_meta"] as? [String: Any])
-                .flatMap(PipelineUsage.init(dict:)),
         )
     }
 
@@ -434,13 +427,6 @@ enum SessionManager {
         let sampleRate = file.fileFormat.sampleRate
         guard sampleRate > 0 else { return nil }
         return Double(file.length) / sampleRate
-    }
-
-    /// Return the language WhisperKit detected on the last `auto` transcription,
-    /// or `nil` when the session was transcribed with an explicit language or
-    /// hasn't been transcribed yet.
-    static func detectedLanguage(for dir: URL) -> String? {
-        readMeta(dir)["detected_language"] as? String
     }
 
     static func displayName(_ dir: URL) -> String {

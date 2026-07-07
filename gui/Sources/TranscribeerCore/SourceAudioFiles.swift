@@ -28,14 +28,19 @@ public enum SourceAudioFiles {
     }
 
     public static func isNonEmpty(_ url: URL) -> Bool {
+        byteCount(url) > 0
+    }
+
+    /// Size of the file at `url` in bytes, or 0 if it can't be read.
+    public static func byteCount(_ url: URL) -> UInt64 {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
-            return false
+            return 0
         }
 
         return switch attributes[.size] {
-        case let size as UInt64: size > 0
-        case let size as NSNumber: size.uint64Value > 0
-        default: false
+        case let size as UInt64: size
+        case let size as NSNumber: size.uint64Value
+        default: 0
         }
     }
 }

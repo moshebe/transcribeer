@@ -59,8 +59,6 @@ struct SessionDateFormatterTests {
             hasSummary: false,
             startedAt: startedAt,
             endedAt: endedAt,
-            transcriptionUsage: nil,
-            summarizationUsage: nil,
         )
     }
 

@@ -242,26 +242,6 @@ struct TranscriptionSettingsView: View {
         }
     }
 
-    private var whisperFooter: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Models are downloaded on first use (~0.1–1.5 GB). Stored in ~/.transcribeer/models/.")
-            Text("Custom repo: HuggingFace repo for ivrit-ai or other fine-tuned models")
-            Text("(e.g. owner/ivrit-ai-whisper-large-v3-turbo-coreml).")
-            if AppConfig.isCTranslate2Repo(config.whisperModelRepo) {
-                Text(
-                    "This looks like a CTranslate2 / faster-whisper model. "
-                    + "WhisperKit requires CoreML format — convert it first with "
-                    + "scripts/convert-ivrit-ai.sh, then point the repo here."
-                )
-                .foregroundStyle(.orange)
-            }
-            if let message = modelCatalog.lastError {
-                Text(message).foregroundStyle(.orange)
-            }
-        }
-        .foregroundStyle(.secondary)
-    }
-
     private var generalModelPicker: some View {
         let selected = AppConfig.canonicalWhisperModel(config.whisperModel)
         return Picker("Model", selection: Binding(
@@ -567,11 +547,7 @@ struct CuratedModelRow: View {
     }
 
     private var isInstalled: Bool {
-        guard let dl = downloader, let manifest = manifestEntry else {
-            // For non-Hebrew models: check standard WhisperKit snapshot dir via
-            // a lightweight folder existence check using the same path ModelCatalogService uses.
-            return false
-        }
+        guard let dl = downloader, let manifest = manifestEntry else { return false }
         return dl.isInstalled(manifest)
     }
 

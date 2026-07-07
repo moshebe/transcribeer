@@ -1,4 +1,5 @@
 import SwiftUI
+import TranscribeerCore
 
 /// Renders a parsed transcript as a stack of speaker rows with clickable
 /// timestamps. Tapping a timestamp seeks the session's audio player.

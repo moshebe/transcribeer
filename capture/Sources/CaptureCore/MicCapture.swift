@@ -312,11 +312,6 @@ public final class MicCapture: @unchecked Sendable {
 
     // MARK: - Device queries
 
-    /// List available input devices.
-    public static func availableInputDevices() -> [(id: AudioDeviceID, name: String)] {
-        AudioDevices.availableInputDevices().map { (id: $0.id, name: $0.name) }
-    }
-
     /// Convert a CoreAudio AudioDeviceID to its stable UID string.
     public static func deviceUID(for deviceID: AudioDeviceID) -> String? {
         AudioDevices.availableInputDevices()
@@ -345,9 +340,5 @@ public final class MicCapture: @unchecked Sendable {
     /// AudioDeviceID, if the device is connected.
     public static func inputDeviceID(forUID uid: String) -> AudioDeviceID? {
         AudioDevices.inputDeviceID(forUID: uid)
-    }
-
-    public static func defaultInputDeviceID() -> AudioDeviceID? {
-        AudioDevices.defaultInputDeviceID()
     }
 }

@@ -42,7 +42,7 @@ public struct NativeAudioProcessor: AudioProcessingBackend {
             throw AudioProcessingError.inputMissing(request.inputURL)
         }
 
-        let inputBytes = fileSize(request.inputURL)
+        let inputBytes = SourceAudioFiles.byteCount(request.inputURL)
         let inputFile = try AVAudioFile(forReading: request.inputURL)
         let sourceFormat = inputFile.processingFormat
         let duration = durationSeconds(file: inputFile, sourceFormat: sourceFormat)
@@ -55,7 +55,7 @@ public struct NativeAudioProcessor: AudioProcessingBackend {
             throw AudioProcessingError.cannotCreateExporter(backendID: backendID)
         }
 
-        let tempURL = temporaryOutputURL(for: request.outputURL, container: request.container)
+        let tempURL = AudioTranscodeIO.temporaryOutputURL(for: request.outputURL)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         let outputFile = try makeOutputFile(at: tempURL, request: request, targetFormat: targetFormat)
@@ -69,23 +69,17 @@ public struct NativeAudioProcessor: AudioProcessingBackend {
             throw AudioProcessingError.emptyOutput(request.outputURL)
         }
 
-        try replace(tempURL: tempURL, outputURL: request.outputURL)
+        try AudioTranscodeIO.replace(tempURL: tempURL, outputURL: request.outputURL)
         return AudioTranscodeResult(
             outputURL: request.outputURL,
             backendID: backendID,
-            outputBytes: fileSize(request.outputURL),
+            outputBytes: SourceAudioFiles.byteCount(request.outputURL),
             inputBytes: inputBytes,
             durationSeconds: duration
         )
     }
 
     private static func validate(_ request: AudioTranscodeRequest) throws {
-        guard request.codec == .aac else {
-            throw AudioProcessingError.unsupportedRequest("AVFoundation fallback only writes AAC audio")
-        }
-        guard request.container == .m4a else {
-            throw AudioProcessingError.unsupportedRequest("AVFoundation fallback only writes M4A containers")
-        }
         if let sampleRate = request.sampleRate, !sampleRate.isFinite || sampleRate <= 0 {
             throw AudioProcessingError.unsupportedRequest("sample rate must be positive")
         }
@@ -100,30 +94,15 @@ public struct NativeAudioProcessor: AudioProcessingBackend {
         backendID: String
     ) throws -> AVAudioFormat {
         let sampleRate = request.sampleRate ?? sourceFormat.sampleRate
-        let channels = targetChannelCount(request.channelMode, sourceFormat: sourceFormat)
-        guard channels > 0 else {
-            throw AudioProcessingError.unsupportedRequest("source audio has no channels")
-        }
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: sampleRate,
-            channels: channels,
+            channels: 1,
             interleaved: false
         ) else {
             throw AudioProcessingError.cannotCreateExporter(backendID: backendID)
         }
         return format
-    }
-
-    private static func targetChannelCount(
-        _ mode: AudioProcessingChannelMode,
-        sourceFormat: AVAudioFormat
-    ) -> AVAudioChannelCount {
-        switch mode {
-        case .preserve: sourceFormat.channelCount
-        case .mono: 1
-        case .stereo: 2
-        }
     }
 
     private static func makeOutputFile(
@@ -221,42 +200,5 @@ public struct NativeAudioProcessor: AudioProcessingBackend {
     private static func durationSeconds(file: AVAudioFile, sourceFormat: AVAudioFormat) -> Double? {
         guard sourceFormat.sampleRate > 0 else { return nil }
         return Double(file.length) / sourceFormat.sampleRate
-    }
-
-    private static func temporaryOutputURL(for outputURL: URL, container: AudioProcessingContainer) -> URL {
-        outputURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(outputURL.lastPathComponent).\(UUID().uuidString)")
-            .appendingPathExtension(container.fileExtension)
-    }
-
-    private static func replace(tempURL: URL, outputURL: URL) throws {
-        do {
-            if FileManager.default.fileExists(atPath: outputURL.path) {
-                _ = try FileManager.default.replaceItemAt(
-                    outputURL,
-                    withItemAt: tempURL,
-                    backupItemName: nil,
-                    options: []
-                )
-            } else {
-                try FileManager.default.moveItem(at: tempURL, to: outputURL)
-            }
-        } catch {
-            throw AudioProcessingError.outputReplacementFailed(
-                outputURL: outputURL,
-                message: error.localizedDescription
-            )
-        }
-    }
-
-    private static func fileSize(_ url: URL) -> UInt64 {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
-            return 0
-        }
-        return switch attributes[.size] {
-        case let size as UInt64: size
-        case let size as NSNumber: size.uint64Value
-        default: 0
-        }
     }
 }

@@ -50,18 +50,6 @@ enum TranscriptionBackend: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Default model when this backend is selected for the first time.
-    /// `whisper-1` is the only OpenAI audio model that returns segment-level
-    /// timestamps via `verbose_json`. `gemini-2.5-flash` accepts audio and
-    /// supports structured-output mode for timestamped segments.
-    var defaultModel: String {
-        switch self {
-        case .whisperkit: "openai_whisper-large-v3_turbo"
-        case .openai: "whisper-1"
-        case .gemini: "gemini-2.5-flash"
-        }
-    }
-
     /// Parse a persisted config string, falling back to `.whisperkit` so a
     /// typo never breaks transcription.
     static func from(_ raw: String) -> Self {

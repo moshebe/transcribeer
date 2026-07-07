@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Testing
+import TranscribeerCore
 @testable import TranscribeerApp
 
 struct SessionSplitterTests {
