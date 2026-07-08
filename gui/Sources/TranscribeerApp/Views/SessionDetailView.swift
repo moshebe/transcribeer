@@ -499,14 +499,16 @@ struct SessionDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(20)
     }
+}
 
-    // MARK: - Status toast
+// MARK: - SessionDetailView: status + progress
 
-    private var statusToast: some View {
+private extension SessionDetailView {
+    var statusToast: some View {
         SessionStatusToast(statusText: $statusText)
     }
 
-    private func scheduleStatusClear(for newValue: String) {
+    func scheduleStatusClear(for newValue: String) {
         statusClearTask?.cancel()
         guard !newValue.isEmpty, !newValue.hasSuffix("…") else { return }
         let hasError = newValue.lowercased().contains("failed")
@@ -518,9 +520,7 @@ struct SessionDetailView: View {
         }
     }
 
-    // MARK: - Progress row
-
-    private var showProgressRow: Bool {
+    var showProgressRow: Bool {
         runner.transcriptionProgress != nil
             || runner.transcriptionService.modelState.isBusy
     }
