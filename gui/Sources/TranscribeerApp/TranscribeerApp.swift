@@ -16,13 +16,10 @@ private let logger = Logger(subsystem: "com.transcribeer", category: "app")
 /// which loops. Polling into `@State` breaks that cycle.
 struct RecordingMenuItems: View {
     let runner: PipelineRunner
-    let startTime: Date
-    @State private var elapsedText = "⏺ Recording  00:00"
     @State private var title: String?
     @State private var participants: [String] = []
 
     var body: some View {
-        Text(elapsedText)
         if let title {
             Text("🎥 \(title)")
         }
@@ -41,10 +38,6 @@ struct RecordingMenuItems: View {
     }
 
     private func refresh() {
-        let elapsed = Int(Date().timeIntervalSince(startTime))
-        let text = String(format: "⏺ Recording  %02d:%02d", elapsed / 60, elapsed % 60)
-        if text != elapsedText { elapsedText = text }
-
         let newTitle = runner.liveMeetingTitle
         if newTitle != title { title = newTitle }
 
@@ -173,8 +166,8 @@ struct TranscribeerApp: App {
                 startRecording(autoStarted: false)
             }
 
-        case .recording(let startTime):
-            RecordingMenuItems(runner: runner, startTime: startTime)
+        case .recording:
+            RecordingMenuItems(runner: runner)
 
         case .awaitingPostRecordingChoice:
             Text("⏸ Recording saved — choose action")
