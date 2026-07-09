@@ -57,6 +57,12 @@ struct SessionDetailView: View {
     /// the same player instance the `AudioPlayerView` drives.
     @State private var playerVM = AudioPlayerVM()
 
+    // Find (⌘F) state, shared across the summary / transcript / notes tabs.
+    @State private var findVisible = false
+    @State private var findQuery = ""
+    @State private var findIndex = 0
+    @FocusState private var findFocused: Bool
+
     enum Tab: String, CaseIterable, Identifiable {
         case summary = "Summary"
         case transcript = "Transcript"
@@ -118,7 +124,15 @@ struct SessionDetailView: View {
                 .accessibilityLabel("Reveal in Finder")
             }
         }
+        .background {
+            Button("Find", action: openFind)
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+        }
+        .overlay(alignment: .topTrailing) { findBar }
         .overlay(alignment: .bottom) { statusToast }
+        .onChange(of: findQuery) { _, _ in findIndex = 0 }
+        .onChange(of: activeTab) { _, _ in findIndex = 0 }
         .confirmationDialog(
             "Delete \"\(detail.name.isEmpty ? session.name : detail.name)\"?",
             isPresented: $showDeleteConfirm,
@@ -392,8 +406,12 @@ struct SessionDetailView: View {
         } else {
             VStack(spacing: 0) {
                 usageStrip(detail.summarizationUsage, hidden: isSummarizingThisSession)
-                SummaryMarkdownView(text: summaryText)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                SummaryMarkdownView(
+                    text: summaryText,
+                    searchQuery: findVisible ? findQuery : "",
+                    activeOccurrence: findVisible ? clampedIndex(matchCount) : nil,
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
@@ -433,6 +451,7 @@ struct SessionDetailView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            let match = activeTranscriptMatch(in: lines)
             VStack(spacing: 0) {
                 usageStrip(detail.transcriptionUsage, hidden: isTranscribingThisSession)
                 TranscriptView(
@@ -440,7 +459,11 @@ struct SessionDetailView: View {
                     onSeek: { playerVM.seek(to: $0) },
                     playheadTime: playerVM.hasAudio ? playerVM.currentTime : nil,
                     isStreaming: isTranscribingThisSession,
-                    otherLabel: config.audio.otherLabel
+                    otherLabel: config.audio.otherLabel,
+                    searchQuery: findVisible ? findQuery : "",
+                    activeLineIndex: match?.lineIndex,
+                    activeOccurrence: match?.occurrence,
+                    searchToken: findIndex,
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -452,11 +475,11 @@ struct SessionDetailView: View {
     }
 
     private var notesView: some View {
-        TextEditor(text: $notes)
-            .font(.system(size: 13))
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+        NotesEditor(
+            text: $notes,
+            searchQuery: findVisible ? findQuery : "",
+            activeOccurrence: findVisible ? clampedIndex(matchCount) : nil,
+        )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onChange(of: notes) { _, newValue in
                 notesSaveTask?.cancel()
@@ -476,14 +499,16 @@ struct SessionDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(20)
     }
+}
 
-    // MARK: - Status toast
+// MARK: - SessionDetailView: status + progress
 
-    private var statusToast: some View {
+private extension SessionDetailView {
+    var statusToast: some View {
         SessionStatusToast(statusText: $statusText)
     }
 
-    private func scheduleStatusClear(for newValue: String) {
+    func scheduleStatusClear(for newValue: String) {
         statusClearTask?.cancel()
         guard !newValue.isEmpty, !newValue.hasSuffix("…") else { return }
         let hasError = newValue.lowercased().contains("failed")
@@ -495,9 +520,7 @@ struct SessionDetailView: View {
         }
     }
 
-    // MARK: - Progress row
-
-    private var showProgressRow: Bool {
+    var showProgressRow: Bool {
         runner.transcriptionProgress != nil
             || runner.transcriptionService.modelState.isBusy
     }
@@ -560,6 +583,82 @@ private extension SessionDetailView {
         } catch {
             statusText = "Export failed: \(error.localizedDescription)"
         }
+    }
+}
+
+// MARK: - SessionDetailView: find (⌘F)
+
+private extension SessionDetailView {
+    @ViewBuilder
+    var findBar: some View {
+        if findVisible {
+            let count = matchCount
+            FindBar(
+                query: $findQuery,
+                matchCount: count,
+                currentIndex: clampedIndex(count),
+                onNext: nextMatch,
+                onPrev: prevMatch,
+                onClose: closeFind,
+                focused: $findFocused,
+            )
+            .padding(12)
+        }
+    }
+
+    func openFind() {
+        findVisible = true
+        DispatchQueue.main.async { findFocused = true }
+    }
+
+    func closeFind() {
+        findVisible = false
+        findQuery = ""
+        findIndex = 0
+    }
+
+    func nextMatch() {
+        guard matchCount > 0 else { return }
+        findIndex = (findIndex + 1) % matchCount
+    }
+
+    func prevMatch() {
+        guard matchCount > 0 else { return }
+        findIndex = (findIndex - 1 + matchCount) % matchCount
+    }
+
+    /// Match count for the currently active tab. Drives the find bar label
+    /// and navigation wrap-around.
+    var matchCount: Int {
+        guard findVisible, !findQuery.isEmpty else { return 0 }
+        switch activeTab {
+        case .transcript: return transcriptMatchLocations(in: transcriptLines).count
+        case .summary: return TextMatcher.count(of: findQuery, in: summaryText)
+        case .notes: return TextMatcher.count(of: findQuery, in: notes)
+        }
+    }
+
+    func clampedIndex(_ count: Int) -> Int {
+        count > 0 ? min(findIndex, count - 1) : 0
+    }
+
+    /// Flat list of transcript matches in reading order, each tagged with the
+    /// line's array index and its occurrence within that line.
+    func transcriptMatchLocations(in lines: [TranscriptLine]) -> [(lineIndex: Int, occurrence: Int)] {
+        guard !findQuery.isEmpty else { return [] }
+        var locations: [(Int, Int)] = []
+        for (index, line) in lines.enumerated() {
+            let count = TextMatcher.count(of: findQuery, in: line.text)
+            for occurrence in 0..<count { locations.append((index, occurrence)) }
+        }
+        return locations
+    }
+
+    func activeTranscriptMatch(in lines: [TranscriptLine]) -> (lineIndex: Int, occurrence: Int)? {
+        guard findVisible else { return nil }
+        let locations = transcriptMatchLocations(in: lines)
+        guard !locations.isEmpty else { return nil }
+        return locations[clampedIndex(locations.count)]
     }
 }
 

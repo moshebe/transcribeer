@@ -28,16 +28,31 @@ struct TranscriptView: View {
     /// palette used for diarized speakers.
     let otherLabel: String?
 
+    /// Active find query. Empty when the find bar is closed. All occurrences
+    /// are highlighted; the current match gets a stronger accent.
+    var searchQuery: String = ""
+
+    /// Array index of the line holding the current find match, and which
+    /// occurrence within that line is active. Drives scroll + active accent.
+    var activeLineIndex: Int?
+    var activeOccurrence: Int?
+
+    /// Bumped by the host on every find navigation so the view scrolls the
+    /// current match into view.
+    var searchToken: Int = 0
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(lines) { line in
+                    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
                         TranscriptRow(
                             line: line,
                             isActive: isActive(line),
                             onSeek: onSeek,
-                            otherLabel: otherLabel
+                            otherLabel: otherLabel,
+                            searchQuery: searchQuery,
+                            activeOccurrence: index == activeLineIndex ? activeOccurrence : nil
                         )
                         .id(line.id)
                     }
@@ -56,6 +71,15 @@ struct TranscriptView: View {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
+            .onChange(of: searchToken) { _, _ in scrollToActiveMatch(proxy) }
+            .onChange(of: activeLineIndex) { _, _ in scrollToActiveMatch(proxy) }
+        }
+    }
+
+    private func scrollToActiveMatch(_ proxy: ScrollViewProxy) {
+        guard let activeLineIndex, lines.indices.contains(activeLineIndex) else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(lines[activeLineIndex].id, anchor: .center)
         }
     }
 
@@ -82,6 +106,10 @@ private struct TranscriptRow: View {
     let isActive: Bool
     let onSeek: (Double) -> Void
     let otherLabel: String?
+    let searchQuery: String
+    /// Non-nil only when this row holds the current find match; identifies
+    /// which occurrence within the line's text gets the active accent.
+    let activeOccurrence: Int?
 
     private var isRTL: Bool { TextDirection.containsRightToLeft(line.text) }
     private var direction: LayoutDirection { isRTL ? .rightToLeft : .leftToRight }
@@ -120,7 +148,7 @@ private struct TranscriptRow: View {
             .environment(\.layoutDirection, .leftToRight)
             .frame(maxWidth: .infinity, alignment: frameAlignment)
 
-            Text(line.text)
+            Text(TextMatcher.highlighted(text: line.text, query: searchQuery, activeOccurrence: activeOccurrence))
                 .font(.system(size: 13))
                 .lineSpacing(3)
                 .multilineTextAlignment(textAlignment)

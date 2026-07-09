@@ -12,7 +12,20 @@ import SwiftUI
 struct SummaryMarkdownView: View {
     let text: String
 
+    /// Active find query. When non-empty the view forces the markdown source
+    /// (an `NSTextView`) so matches can be highlighted — `MarkdownUI`'s rich
+    /// render has no per-substring highlight hook.
+    var searchQuery: String = ""
+    var activeOccurrence: Int?
+
     @State private var showSource = false
+
+    private var searchActive: Bool { !searchQuery.isEmpty }
+    // ponytail: while searching, fall back to the raw markdown source so
+    // matches can be highlighted in its NSTextView. Upgrade path: render
+    // markdown to an AttributedString and highlight in place (like the
+    // transcript) if the raw `#`/`**` markup during search bothers people.
+    private var effectiveShowSource: Bool { searchActive || showSource }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -25,7 +38,7 @@ struct SummaryMarkdownView: View {
             // inner `Markdown` view — is what actually flips block-level
             // layout, list markers and paragraph alignment.
             Group {
-                if showSource {
+                if effectiveShowSource {
                     sourceView
                 } else {
                     richView
@@ -33,8 +46,10 @@ struct SummaryMarkdownView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            toggleButton
-                .padding(8)
+            if !searchActive {
+                toggleButton
+                    .padding(8)
+            }
         }
     }
 
@@ -74,7 +89,12 @@ struct SummaryMarkdownView: View {
 
     private var sourceView: some View {
         HighlightedTextEditor(text: readonlyBinding, highlightRules: .markdown)
-            .introspect { editor in configure(editor.textView) }
+            .introspect { editor in
+                configure(editor.textView)
+                SearchHighlighter.applyDeferred(
+                    query: searchQuery, activeOccurrence: activeOccurrence, to: editor.textView,
+                )
+            }
             .background(Color(nsColor: .textBackgroundColor))
             .environment(\.layoutDirection, layoutDirection)
             .environment(\.locale, locale)
