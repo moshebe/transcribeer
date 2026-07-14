@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import os
 import TranscribeerCore
+import ZstdExtractor
 
 // MARK: - Error type
 
@@ -291,26 +292,15 @@ final class HebrewModelDownloader {
         }
     }
 
+    /// Extracts a `.tar.zst` (or any libarchive-supported format) into `destination`
+    /// using the system `libarchive.2.dylib` directly — no external `zstd` binary required.
     nonisolated private func extract(tarball: URL, to destination: URL) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        process.arguments = ["--zstd", "-xf", tarball.path, "-C", destination.path]
-        let stderrPipe = Pipe()
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            throw HebrewModelDownloadError.extractionFailed(exitCode: -1, stderr: error.localizedDescription)
-        }
-
-        process.waitUntilExit()
-
-        let exitCode = process.terminationStatus
-        guard exitCode == 0 else {
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-            throw HebrewModelDownloadError.extractionFailed(exitCode: exitCode, stderr: stderr)
+        let bufLen: Int32 = 1024
+        var errorBuf = [CChar](repeating: 0, count: Int(bufLen))
+        let result = zstd_extract(tarball.path, destination.path, &errorBuf, bufLen)
+        guard result == 0 else {
+            let stderr = String(cString: errorBuf)
+            throw HebrewModelDownloadError.extractionFailed(exitCode: result, stderr: stderr)
         }
     }
 

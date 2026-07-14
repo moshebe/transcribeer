@@ -108,6 +108,9 @@ struct TranscribeerApp: App {
             .onChange(of: config.scheduledTranscriptionHour) { _, _ in
                 scheduler.reschedule()
             }
+            .onChange(of: config.disableReducedPerformanceMode) { _, newValue in
+                resourceGovernor.isThrottlingDisabled = newValue
+            }
         }
 
         Window("Recording History", id: "history") {
@@ -262,6 +265,7 @@ struct TranscribeerApp: App {
             await maintainHistoricalAudioSidecars(sessionsDir: sessionsDir, ffmpegPath: ffmpegPath)
         }
         runner.transcriptionService.resourceGovernor = resourceGovernor
+        resourceGovernor.isThrottlingDisabled = config.disableReducedPerformanceMode
         meetingDetector.start()
         showFirstRunOnboardingIfNeeded()
 

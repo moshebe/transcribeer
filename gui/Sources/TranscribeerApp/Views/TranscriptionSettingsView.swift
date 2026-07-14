@@ -27,9 +27,12 @@ struct TranscriptionSettingsView: View {
     var body: some View {
         Form {
             backendSection
-            if backend == .whisperkit {
+            switch backend {
+            case .whisperkit:
                 whisperKitSection
-            } else {
+            case .speechAnalyzer:
+                speechAnalyzerSection
+            case .openai, .gemini:
                 cloudSection
             }
             languageSection
@@ -176,12 +179,23 @@ struct TranscriptionSettingsView: View {
                     + "(e.g. ivrit-ai_whisper-large-v3-turbo)."
                 )
             }
+            Toggle(isOn: Binding(
+                get: { config.disableReducedPerformanceMode },
+                set: { config.disableReducedPerformanceMode = $0; save() },
+            )) {
+                Text("Disable reduced performance mode")
+            }
         } header: {
             Text("Advanced")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Override the HuggingFace repo for the 'Other languages' model.")
                 Text("Example: owner/ivrit-ai-whisper-large-v3-turbo-coreml")
+                Text(
+                    "When reduced performance mode is disabled, thermal state, Low Power Mode, "
+                    + "and memory pressure are ignored — the chip-tier maximum is always used. "
+                    + "Not recommended for sustained workloads on battery."
+                )
             }
             .foregroundStyle(.secondary)
         }
@@ -260,6 +274,43 @@ struct TranscriptionSettingsView: View {
         .disabled(modelCatalog.entries.isEmpty)
     }
 
+    // MARK: - Apple SpeechAnalyzer (macOS 26+)
+
+    @ViewBuilder
+    private var speechAnalyzerSection: some View {
+        Section {
+            if #available(macOS 26.0, *) {
+                Label(
+                    "Runs Apple's on-device SpeechAnalyzer. Faster and more "
+                    + "accurate than WhisperKit for supported languages. Models "
+                    + "download automatically on first use.",
+                    systemImage: "waveform.badge.mic"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else {
+                Label(
+                    "Requires macOS 26 (Tahoe) or later. Upgrade macOS, or "
+                    + "switch to Local (WhisperKit).",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("SpeechAnalyzer")
+        } footer: {
+            Text(
+                "Supported: English, Spanish, French, German, Italian, "
+                + "Portuguese (BR), Japanese, Korean, Mandarin, Cantonese, "
+                + "and a few others. **Hebrew is not supported** — the app "
+                + "will refuse to transcribe Hebrew with this engine; switch "
+                + "back to Local (WhisperKit) for Hebrew recordings."
+            )
+            .foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: - Cloud (OpenAI / Gemini)
 
     @ViewBuilder
@@ -306,7 +357,7 @@ struct TranscriptionSettingsView: View {
 
     private var cloudFooter: String {
         switch backend {
-        case .whisperkit:
+        case .whisperkit, .speechAnalyzer:
             return ""
         case .openai:
             return "`whisper-1` is the only OpenAI audio model that returns segment-level "

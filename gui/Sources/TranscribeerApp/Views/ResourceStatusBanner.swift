@@ -28,6 +28,9 @@ struct ResourceStatusBanner: View {
     // MARK: - Private
 
     private var degradedMessage: String? {
+        // Suppressed when the user has opted out of reduced performance mode.
+        guard !governor.isThrottlingDisabled else { return nil }
+
         // Thermal takes priority over power mode in the message hierarchy.
         switch governor.thermalState {
         case .critical, .serious:

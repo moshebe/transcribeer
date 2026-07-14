@@ -30,6 +30,10 @@ final class ResourceGovernor {
     private(set) var lastMemoryPressureEvent: Date?
     private(set) var lastMemoryPressureLevel: MemoryPressureLevel?
 
+    /// When `true`, `currentBudget()` always returns the chip-tier maximum and
+    /// the `ResourceStatusBanner` is suppressed. Set by the user via Settings.
+    var isThrottlingDisabled: Bool = false
+
     // MARK: - Providers (injectable for testing)
 
     private let thermalStateProvider: @Sendable () -> ProcessInfo.ThermalState
@@ -94,6 +98,23 @@ final class ResourceGovernor {
 
     /// Derive the current operational budget from all observed signals.
     func currentBudget() -> TranscriptionBudget {
+        // When the user has opted out of throttling, return the chip-tier maximum
+        // and skip all thermal / power / memory checks.
+        if isThrottlingDisabled {
+            let maxConcurrency: Int
+            switch chipInfo.tier {
+            case .max, .ultra: maxConcurrency = 3
+            case .pro:         maxConcurrency = 2
+            default:           maxConcurrency = 1
+            }
+            return TranscriptionBudget(
+                maxConcurrency: maxConcurrency,
+                allowANE: true,
+                allowParallel: true,
+                idleUnloadMinutes: 10
+            )
+        }
+
         var maxConcurrency: Int
         var allowParallel: Bool
 

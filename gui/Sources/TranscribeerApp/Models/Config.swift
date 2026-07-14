@@ -55,6 +55,9 @@ struct AppConfig: Equatable {
     var audio = AudioSettings()
     /// Minutes of inactivity before the loaded WhisperKit model is auto-unloaded. 0 = never.
     var idleUnloadMinutes: Int = 10
+    /// When true, `ResourceGovernor` always returns the full-performance budget regardless
+    /// of thermal state, power mode, or memory pressure. The banner is also suppressed.
+    var disableReducedPerformanceMode: Bool = false
     // MARK: Language-specific model routing (Track 2.2)
     /// WhisperKit model used when `language == "he"`. Defaults to the recommended ivrit.ai turbo.
     var hebrewWhisperModel: String = "ivrit-ai_whisper-large-v3-turbo"
@@ -133,6 +136,7 @@ struct TranscriptionSection: Decodable {
     var diarization: String?
     var num_speakers: Int?
     var idle_unload_minutes: Int?
+    var disable_reduced_performance_mode: Bool?
     // Track 2.2 — language-specific model routing
     var hebrew_model: String?
     var hebrew_model_repo: String?
@@ -268,6 +272,8 @@ enum ConfigManager {
         if let minutes = s.idle_unload_minutes, minutes >= 0 {
             cfg.idleUnloadMinutes = minutes
         }
+        cfg.disableReducedPerformanceMode =
+            s.disable_reduced_performance_mode ?? cfg.disableReducedPerformanceMode
         cfg.hebrewWhisperModel = s.hebrew_model ?? cfg.hebrewWhisperModel
         cfg.hebrewWhisperModelRepo = s.hebrew_model_repo ?? cfg.hebrewWhisperModelRepo
         cfg.englishWhisperModel = s.english_model ?? cfg.englishWhisperModel
@@ -343,6 +349,7 @@ enum ConfigManager {
         diarization = \(tomlString(cfg.diarization))
         num_speakers = \(speakers)
         idle_unload_minutes = \(cfg.idleUnloadMinutes)
+        disable_reduced_performance_mode = \(cfg.disableReducedPerformanceMode)
         hebrew_model = \(tomlString(cfg.hebrewWhisperModel))
         hebrew_model_repo = \(tomlString(cfg.hebrewWhisperModelRepo))
         english_model = \(tomlString(cfg.englishWhisperModel))

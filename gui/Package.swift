@@ -14,6 +14,17 @@ let package = Package(
         .package(path: "../capture"),
     ],
     targets: [
+        // Thin C wrapper around libarchive for .tar.zst extraction without requiring
+        // an external `zstd` binary. libarchive.2.dylib ships on every macOS 10.9+
+        // and includes built-in zstd support.
+        .target(
+            name: "ZstdExtractor",
+            path: "Sources/ZstdExtractor",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedLibrary("archive"),
+            ]
+        ),
         // Shared business logic — no GUI coupling
         .target(
             name: "TranscribeerCore",
@@ -31,6 +42,7 @@ let package = Package(
             name: "TranscribeerApp",
             dependencies: [
                 "TranscribeerCore",
+                "ZstdExtractor",
                 .product(name: "CaptureCore", package: "capture"),
                 .product(name: "HighlightedTextEditor", package: "HighlightedTextEditor"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
@@ -47,7 +59,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TranscribeerTests",
-            dependencies: ["TranscribeerApp"],
+            dependencies: ["TranscribeerApp", "ZstdExtractor"],
             path: "Tests/TranscribeerTests",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
