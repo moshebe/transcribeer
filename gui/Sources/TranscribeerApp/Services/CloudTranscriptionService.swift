@@ -276,12 +276,12 @@ enum CloudTranscriptionService {
         apiKey: String
     ) async throws -> [CoreSegment] {
         switch backend {
-        case .whisperkit:
-            // The public `transcribe` entrypoint guards out `.whisperkit`
+        case .whisperkit, .speechAnalyzer:
+            // The public `transcribe` entrypoint guards out local backends
             // before reaching this function. A future caller that forgets
             // that guard should fail loudly rather than silently produce an
             // empty transcript.
-            preconditionFailure("transcribeChunk called with .whisperkit backend")
+            preconditionFailure("transcribeChunk called with local backend \(backend.rawValue)")
         case .openai:
             return try await OpenAITranscription.call(
                 audioURL: chunkURL, model: model, language: language, apiKey: apiKey

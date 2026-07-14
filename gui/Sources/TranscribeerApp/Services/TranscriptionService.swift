@@ -240,6 +240,8 @@ final class TranscriptionService {
         switch backend {
         case .whisperkit:
             return try await transcribeLocal(session: session, config: config, timing: timing)
+        case .speechAnalyzer:
+            return try await transcribeSpeechAnalyzer(session: session, config: config, timing: timing)
         case .openai, .gemini:
             return try await transcribeCloud(
                 session: session,
@@ -248,6 +250,53 @@ final class TranscriptionService {
                 backend: backend
             )
         }
+    }
+
+    // MARK: - Apple SpeechAnalyzer (macOS 26+)
+
+    private func transcribeSpeechAnalyzer(
+        session: URL,
+        config: AppConfig,
+        timing: DualSourceTranscriber.TimingInfo
+    ) async throws -> String {
+        guard #available(macOS 26.0, *) else {
+            throw SpeechAnalyzerError.unsupportedOS
+        }
+        disarmIdleTimer()
+
+        progress = 0
+        micProgress = 0
+        sysProgress = 0
+        liveSegments = []
+        lastDetectedLanguage = nil
+
+        let onMicProgress: @Sendable (Double) -> Void = { value in
+            Task { @MainActor in self.applyMicProgress(value) }
+        }
+        let onSysProgress: @Sendable (Double) -> Void = { value in
+            Task { @MainActor in self.applySysProgress(value) }
+        }
+
+        defer {
+            progress = nil
+            micProgress = nil
+            sysProgress = nil
+        }
+
+        let output = try await SpeechAnalyzerTranscriber.transcribe(
+            session: session,
+            config: config,
+            timing: timing,
+            onMicProgress: onMicProgress,
+            onSysProgress: onSysProgress
+        )
+
+        if config.language == "auto", let detected = output.detectedLanguage, !detected.isEmpty {
+            lastDetectedLanguage = detected
+        }
+
+        liveSegments = output.segments.map(Self.toLiveSegment)
+        return TranscriptFormatter.formatDual(output.segments)
     }
 
     /// Read `timing.json` if present. Returns nil-anchored timing when the

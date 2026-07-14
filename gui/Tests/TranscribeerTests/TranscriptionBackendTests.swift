@@ -46,6 +46,6 @@ struct TranscriptionBackendTests {
     @Test("allCases covers every backend (prevents picker regressions)")
     func allCasesCoverage() {
         let cases = Set(TranscriptionBackend.allCases.map(\.rawValue))
-        #expect(cases == ["whisperkit", "openai", "gemini"])
+        #expect(cases == ["whisperkit", "speech_analyzer", "openai", "gemini"])
     }
 }

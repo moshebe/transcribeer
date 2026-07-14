@@ -1,11 +1,15 @@
 /// Supported transcription backends.
 ///
 /// `whisperkit` runs WhisperKit locally on the Apple Neural Engine.
+/// `speechAnalyzer` runs Apple's SpeechAnalyzer / SpeechTranscriber (macOS 26+)
+/// fully on-device. Faster and more accurate than WhisperKit for the
+/// locales it supports, but does not include Hebrew.
 /// `openai` and `gemini` call cloud APIs that take an audio file and return
 /// segmented text. They reuse `KeychainHelper` for API keys (same slot as
 /// summarization for `openai`, dedicated slot for `gemini`).
 enum TranscriptionBackend: String, CaseIterable, Identifiable, Sendable {
     case whisperkit
+    case speechAnalyzer = "speech_analyzer"
     case openai
     case gemini
 
@@ -14,6 +18,7 @@ enum TranscriptionBackend: String, CaseIterable, Identifiable, Sendable {
     var displayName: String {
         switch self {
         case .whisperkit: "Local (WhisperKit)"
+        case .speechAnalyzer: "Apple SpeechAnalyzer (macOS 26+)"
         case .openai: "OpenAI"
         case .gemini: "Gemini"
         }
@@ -23,8 +28,16 @@ enum TranscriptionBackend: String, CaseIterable, Identifiable, Sendable {
     /// Keychain (or read from an environment variable as a fallback).
     var usesAPIKey: Bool {
         switch self {
-        case .whisperkit: false
+        case .whisperkit, .speechAnalyzer: false
         case .openai, .gemini: true
+        }
+    }
+
+    /// Whether this backend runs fully on-device (no network required).
+    var isLocal: Bool {
+        switch self {
+        case .whisperkit, .speechAnalyzer: true
+        case .openai, .gemini: false
         }
     }
 
@@ -33,7 +46,7 @@ enum TranscriptionBackend: String, CaseIterable, Identifiable, Sendable {
     /// summarization side authenticates via gcloud ADC and has no key.
     var keychainKey: String {
         switch self {
-        case .whisperkit: ""
+        case .whisperkit, .speechAnalyzer: ""
         case .openai: "openai"
         case .gemini: "gemini"
         }
@@ -44,7 +57,7 @@ enum TranscriptionBackend: String, CaseIterable, Identifiable, Sendable {
     /// `CloudTranscriptionService` — keep the picker label deterministic.
     var envVar: String? {
         switch self {
-        case .whisperkit: nil
+        case .whisperkit, .speechAnalyzer: nil
         case .openai: "OPENAI_API_KEY"
         case .gemini: "GEMINI_API_KEY"
         }

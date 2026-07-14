@@ -65,6 +65,7 @@ enum SessionUsageRecorder {
     private static func transcriptionModel(for backend: String, config: AppConfig) -> String {
         switch TranscriptionBackend.from(backend) {
         case .whisperkit: config.whisperModel
+        case .speechAnalyzer: "apple-speech-analyzer"
         case .openai: config.openaiTranscriptionModel
         case .gemini: config.geminiTranscriptionModel
         }
