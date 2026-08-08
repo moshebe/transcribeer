@@ -70,9 +70,11 @@ cd transcribeer
 make dev        # builds GUI, registers as a launch agent
 ```
 
+`make dev` (and `make start`/`make gui`) also copy the built app into `~/Applications/Transcribeer.app`, so you can find and launch it via Spotlight (⌘Space) instead of hunting for it in the menu bar or browsing into `gui/.build/`. A real copy is needed (not a symlink) because many dev setups exclude `~/dev`-style trees from Spotlight indexing — a symlink's target would still resolve into the excluded path.
+
 ## Auto-start on Login
 
-Open **System Settings → General → Login Items** and add `Transcribeer.app`, or enable it in the app's Settings panel once launched.
+Open **System Settings → General → Login Items** and add `Transcribeer.app` — from `~/Applications` if built from source, `/Applications` if installed via brew/DMG — or enable it in the app's Settings panel once launched.
 
 ## First Run
 

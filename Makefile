@@ -40,19 +40,32 @@ DEV_VARIANT_BUNDLE   = $(PROJECT_DIR)/gui/.build/Transcribeer-dev.app
 DEV_VARIANT_BUNDLE_ID = com.transcribeer.menubar.dev
 DEV_VARIANT_NAME     = Transcribeer (dev)
 
+# Copy (see spotlight-link below) into ~/Applications so Spotlight
+# (Cmd+Space) and the Login Items picker can find the dev build by name,
+# same as a brew/DMG install would land in /Applications. ~/Applications
+# needs no sudo/admin-group write access and is indexed by Spotlight by
+# default even when the repo's own dev tree is excluded.
+SPOTLIGHT_APP_DIR    = $(HOME)/Applications
+SPOTLIGHT_APP_LINK   = $(SPOTLIGHT_APP_DIR)/Transcribeer.app
+LSREGISTER = /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+
 # Override with: make obsidian-plugin OBSIDIAN_VAULT=/path/to/your/vault
 OBSIDIAN_VAULT ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/$(shell id -un)
 OBSIDIAN_PLUGIN_DIR = $(OBSIDIAN_VAULT)/.obsidian/plugins/transcribeer
 
-.PHONY: gui gui-build gui-build-release build-dev build-release build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture dmg release
+.PHONY: gui gui-build gui-build-release build-dev build-release build-dev-variant gui-dev-variant logs help dev dev-uninstall dev-restart start stop open spotlight-link obsidian-plugin lint lint-fix lint-strict clean reset-mac-permissions sign check-identity setup-dev-cert verify-capture dmg release
 
 help:
 	@echo "dev targets:"
 	@echo "  make dev            install locally + register as launch agent"
-	@echo "  make dev-uninstall  unload agent + remove plist"
+	@echo "                      (also links the app into ~/Applications for Spotlight)"
+	@echo "  make dev-uninstall  unload agent + remove plist + remove ~/Applications link"
 	@echo "  make dev-restart    restart the launch agent"
 	@echo "  make start          ensure the dev agent is loaded and running (no rebuild)"
+	@echo "                      (also links the app into ~/Applications for Spotlight)"
+	@echo "  make open           focus the running app (or launch it if not running)"
 	@echo "  make stop           stop the running dev agent process (keeps plist)"
+	@echo "  make spotlight-link link the built app into ~/Applications for Spotlight"
 	@echo "  make build-dev          build Swift GUI as .app bundle (with DEV badge)"
 	@echo "  make build-release      build Swift GUI as .app bundle (no DEV badge)"
 	@echo "  make gui                build + launch .app bundle (with DEV badge)"
@@ -224,6 +237,7 @@ dev: setup-dev-cert
 	agent_running=0; \
 	if launchctl list $(PLIST_LABEL) >/dev/null 2>&1; then agent_running=1; fi; \
 	$(MAKE) --no-print-directory build-dev || exit $$?; \
+	$(MAKE) --no-print-directory spotlight-link; \
 	if [ -f $(APP_STAMP) ] && [ ! $(APP_STAMP) -nt $$ref ] && [ $$agent_running -eq 1 ]; then \
 		echo "✓ no rebuild needed — leaving running agent alone"; \
 		echo "  logs: $(LOG_DIR)/transcribeer.log"; \
@@ -244,6 +258,10 @@ dev: setup-dev-cert
 dev-uninstall:
 	@launchctl bootout gui/$$(id -u)/$(PLIST_LABEL) 2>/dev/null || true
 	@rm -f $(PLIST_PATH)
+	@if [ -f $(SPOTLIGHT_APP_LINK).managed ]; then \
+		rm -rf $(SPOTLIGHT_APP_LINK) $(SPOTLIGHT_APP_LINK).managed; \
+		echo "✓ removed $(SPOTLIGHT_APP_LINK)"; \
+	fi
 	@echo "✓ transcribeer dev agent removed"
 
 dev-restart:
@@ -270,6 +288,7 @@ start:
 		launchctl kickstart gui/$$(id -u)/$(PLIST_LABEL); \
 		echo "✓ transcribeer started"; \
 	fi
+	@$(MAKE) --no-print-directory spotlight-link
 	@echo "  logs: $(LOG_DIR)/transcribeer.log"
 
 stop:
@@ -280,6 +299,62 @@ stop:
 	else \
 		echo "✓ transcribeer not running"; \
 	fi
+
+# open: focus the app if already running, otherwise launch it.
+# Uses `open -b` (bundle id) so macOS activates the existing instance rather
+# than spawning a second one. Falls back to opening the bundle path directly
+# if the bundle id lookup fails.
+open:
+	@if [ ! -d $(APP_BUNDLE) ]; then \
+		echo "✗ app bundle missing: $(APP_BUNDLE) — run 'make dev' first"; exit 1; \
+	fi
+	@open -b com.transcribeer.menubar $(APP_BUNDLE) 2>/dev/null || open $(APP_BUNDLE)
+	@echo "✓ transcribeer opened"
+
+# spotlight-link: copy (not symlink) the built dev bundle into ~/Applications
+# so Spotlight (Cmd+Space) and the Login Items file picker can find it by
+# name, the same way a brew/DMG install lands in /Applications.
+#
+# Must be a real copy, not a symlink: many dev setups exclude ~/dev (or the
+# whole home-dev tree) from Spotlight indexing to avoid churning through
+# every repo's build artifacts. A symlink's target still resolves into that
+# excluded tree — Spotlight has to read Contents/Info.plist to classify
+# something as an app bundle, and that file would still live under the
+# excluded path — so it never gets indexed. Copying the bytes into
+# ~/Applications sidesteps the exclusion entirely.
+#
+# A marker file *next to* the bundle (Transcribeer.app.managed, not inside
+# it) identifies a copy we made, so re-runs know it's safe to refresh and
+# dev-uninstall knows it's safe to delete — without ever touching a real,
+# unrelated app that happens to live at the same path. The marker must live
+# outside the bundle: any extra file added inside Contents/ invalidates the
+# code signature under `codesign --verify --strict` (sealed resource
+# mismatch), even though the app still runs fine unsigned-check-wise.
+#
+# Swap via rm+mv (not an in-place overwrite) so a copy the user already
+# launched from ~/Applications keeps running against its old, now-unlinked
+# inode instead of crashing on a half-rewritten binary — same reasoning as
+# the atomic rename in build-dev.
+spotlight-link:
+	@if [ ! -d $(APP_BUNDLE) ]; then \
+		echo "✗ app bundle missing: $(APP_BUNDLE) — run 'make dev' first"; exit 1; \
+	fi
+	@mkdir -p $(SPOTLIGHT_APP_DIR)
+	@if [ -e $(SPOTLIGHT_APP_LINK) ] && [ ! -f $(SPOTLIGHT_APP_LINK).managed ]; then \
+		echo "⚠  $(SPOTLIGHT_APP_LINK) exists and isn't a copy we manage — leaving it alone"; \
+	elif cmp -s $(APP_MACOS)/TranscribeerApp $(SPOTLIGHT_APP_LINK)/Contents/MacOS/TranscribeerApp 2>/dev/null \
+	     && cmp -s $(APP_CONTENTS)/Info.plist $(SPOTLIGHT_APP_LINK)/Contents/Info.plist 2>/dev/null; then \
+		: ; \
+	else \
+		rm -rf $(SPOTLIGHT_APP_LINK).new; \
+		ditto $(APP_BUNDLE) $(SPOTLIGHT_APP_LINK).new; \
+		rm -rf $(SPOTLIGHT_APP_LINK); \
+		mv $(SPOTLIGHT_APP_LINK).new $(SPOTLIGHT_APP_LINK); \
+		touch $(SPOTLIGHT_APP_LINK).managed; \
+		echo "✓ copied $(APP_BUNDLE) -> $(SPOTLIGHT_APP_LINK)"; \
+	fi
+	@mdimport $(SPOTLIGHT_APP_LINK) >/dev/null 2>&1 || true
+	@$(LSREGISTER) -f $(SPOTLIGHT_APP_LINK) >/dev/null 2>&1 || true
 
 # ── Swift native GUI ──────────────────────────────────────────────────────────
 # gui-build: compile with DEV_BUILD flag (used by make dev / make gui).
@@ -347,7 +422,7 @@ build-dev: gui-build
 	touch $(APP_STAMP); \
 	echo "✓ app bundle: $(APP_BUNDLE) (signed: $(EFFECTIVE_IDENTITY))"
 
-gui: build-dev
+gui: build-dev spotlight-link
 	open $(APP_BUNDLE)
 
 # build-release: compile without -DDEV_BUILD, then assemble + sign the bundle.
