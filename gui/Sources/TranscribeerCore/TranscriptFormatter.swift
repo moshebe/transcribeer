@@ -164,7 +164,9 @@ public enum TranscriptFormatter {
     public static func parse(_ transcript: String) -> [TranscriptLine] {
         guard !transcript.isEmpty else { return [] }
 
-        let pattern = #"^\[(\d{1,2}(?::\d{2}){1,2}) -> (\d{1,2}(?::\d{2}){1,2})\]\s+([^:]+?):\s*(.*)$"#
+        // Leading component is unbounded: `formatTimestamp` writes minutes past 99
+        // for recordings of 100+ minutes.
+        let pattern = #"^\[(\d+(?::\d{2}){1,2}) -> (\d+(?::\d{2}){1,2})\]\s+([^:]+?):\s*(.*)$"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
 
         var lines: [TranscriptLine] = []

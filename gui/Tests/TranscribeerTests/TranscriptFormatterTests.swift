@@ -60,6 +60,15 @@ struct TranscriptFormatterTests {
         #expect(lines[1].speaker == "Speaker 2")
     }
 
+    @Test("parse accepts minutes past 99 from long recordings")
+    func parseLongRecordingMinutes() {
+        let line = TranscriptFormatter.formatTimestamp(100 * 60 + 5)
+        let lines = TranscriptFormatter.parse("[\(line) -> 101:00] You: late in the meeting")
+        #expect(lines.count == 1)
+        #expect(lines[0].start == 6005)
+        #expect(lines[0].end == 6060)
+    }
+
     @Test("parse strips special tokens from legacy transcripts")
     func parseCleansLegacyTokens() {
         let dirty = "[01:05 -> 03:12] Speaker 1: <|startoftranscript|><|he|><|0.00|> נאום<|15.60|><|endoftext|>"
