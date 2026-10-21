@@ -36,6 +36,34 @@ struct IntegrationsSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // MARK: Meeting notes folder
+            Section {
+                Toggle("Export meeting notes to a folder", isOn: Binding(
+                    get: { config.integrations.exportFolderEnabled },
+                    set: { config.integrations.exportFolderEnabled = $0; save() }
+                ))
+
+                HStack {
+                    TextField("Folder", text: Binding(
+                        get: { config.integrations.exportFolderPath },
+                        set: { config.integrations.exportFolderPath = $0; save() }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!config.integrations.exportFolderEnabled)
+
+                    Button("Choose…") {
+                        chooseExportFolder()
+                    }
+                    .disabled(!config.integrations.exportFolderEnabled)
+                }
+            } header: {
+                Text("Meeting Notes Folder")
+            } footer: {
+                Text("Writes YYYY-MM-DD-<name>-summary.md and -transcript.md after each recording, "
+                    + "re-transcribe and re-summarize. Older exports of the same session are replaced.")
+                    .foregroundStyle(.secondary)
+            }
+
             // MARK: Clipboard
             Section {
                 Toggle("Copy summary to clipboard after recording", isOn: Binding(
@@ -96,14 +124,24 @@ struct IntegrationsSettingsView: View {
     }
 
     private func chooseVaultPath() {
+        guard let url = chooseFolder(message: "Select your Obsidian vault folder") else { return }
+        config.integrations.obsidianVaultPath = url.path
+        save()
+    }
+
+    private func chooseExportFolder() {
+        guard let url = chooseFolder(message: "Select the folder for meeting notes") else { return }
+        config.integrations.exportFolderPath = url.path
+        save()
+    }
+
+    private func chooseFolder(message: String) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "Select your Obsidian vault folder"
+        panel.message = message
         panel.prompt = "Choose"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        config.integrations.obsidianVaultPath = url.path
-        save()
+        return panel.runModal() == .OK ? panel.url : nil
     }
 }

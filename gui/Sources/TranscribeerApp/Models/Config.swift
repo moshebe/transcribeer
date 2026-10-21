@@ -76,6 +76,9 @@ struct AppConfig: Equatable {
         var clipboardCopySummary: Bool = false
         var clipboardCopyTranscript: Bool = false
         var exportFormats: [String] = []
+        /// Mirror each session's summary + transcript as Markdown notes here.
+        var exportFolderEnabled: Bool = false
+        var exportFolderPath: String = ""
     }
 
     var integrations: IntegrationsConfig = .init()
@@ -170,6 +173,8 @@ struct IntegrationsSection: Decodable {
     var obsidian_vault_path: String?
     var clipboard_copy_summary: Bool?
     var clipboard_copy_transcript: Bool?
+    var export_folder_enabled: Bool?
+    var export_folder_path: String?
     var export_formats: [String]?
 }
 
@@ -308,6 +313,8 @@ enum ConfigManager {
             s.clipboard_copy_summary ?? cfg.integrations.clipboardCopySummary
         cfg.integrations.clipboardCopyTranscript =
             s.clipboard_copy_transcript ?? cfg.integrations.clipboardCopyTranscript
+        cfg.integrations.exportFolderEnabled = s.export_folder_enabled ?? cfg.integrations.exportFolderEnabled
+        cfg.integrations.exportFolderPath = s.export_folder_path ?? cfg.integrations.exportFolderPath
         if let formats = s.export_formats {
             cfg.integrations.exportFormats = formats
         }
@@ -379,6 +386,8 @@ enum ConfigManager {
         clipboard_copy_summary = \(cfg.integrations.clipboardCopySummary)
         clipboard_copy_transcript = \(cfg.integrations.clipboardCopyTranscript)
         export_formats = [\(exportFormats)]
+        export_folder_enabled = \(cfg.integrations.exportFolderEnabled)
+        export_folder_path = \(tomlString(cfg.integrations.exportFolderPath))
         """
         try? lines.write(to: configPath, atomically: true, encoding: .utf8)
     }

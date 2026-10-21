@@ -33,6 +33,11 @@ enum IntegrationDispatcher {
 
         // MARK: Obsidian vault validation
         dispatchObsidian(config: config, log: log)
+
+        // MARK: Meeting notes folder
+        if let line = MeetingNotesExporter.exportIfEnabled(session: session, config: config) {
+            log(line)
+        }
     }
 
     // MARK: - Clipboard

@@ -74,6 +74,9 @@ extension PipelineRunner {
                 // the chip doesn't show a stale value after a manual re-transcribe.
                 SessionManager.setDetectedLanguage(session, nil)
             }
+            if let line = MeetingNotesExporter.exportIfEnabled(session: session, config: config) {
+                appendSessionLog(session, line)
+            }
             return CLIResult(ok: true, error: "")
         } catch is CancellationError {
             historyLogger.info("re-transcribe cancelled")
@@ -170,6 +173,9 @@ extension PipelineRunner {
         isCancelling = false
         if case .summarizing = state { state = previousState }
 
+        if result.ok, let line = MeetingNotesExporter.exportIfEnabled(session: session, config: config) {
+            appendSessionLog(session, line)
+        }
         if !result.ok, result.error == "Cancelled" {
             historyLogger.info("re-summarize cancelled")
             appendSessionLog(session, "re-summarize cancelled")
