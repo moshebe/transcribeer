@@ -11,6 +11,7 @@ enum HebrewModelDownloadError: LocalizedError {
     case extractionFailed(exitCode: Int32, stderr: String)
     case writeFailed(URL, underlying: Error)
     case network(underlying: Error)
+    case missingBundles(archive: String)
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ enum HebrewModelDownloadError: LocalizedError {
             "Failed to write \(url.lastPathComponent): \(underlying.localizedDescription)"
         case let .network(underlying):
             "Network error: \(underlying.localizedDescription)"
+        case let .missingBundles(archive):
+            "\(archive) doesn't contain a WhisperKit CoreML model (AudioEncoder, TextDecoder, MelSpectrogram)."
         }
     }
 }
@@ -146,6 +149,10 @@ private final class TaskBox: @unchecked Sendable {
 /// under the same `argmaxinc/whisperkit-coreml` prefix with no changes to TranscriptionService.
 @Observable @MainActor
 final class HebrewModelDownloader {
+    /// App-wide instance so every surface (Settings, onboarding, History)
+    /// observes the same in-flight download.
+    static let shared = HebrewModelDownloader()
+
     // MARK: - Public state
 
     private(set) var progress: Double?
@@ -184,10 +191,45 @@ final class HebrewModelDownloader {
 
     /// Returns true when the model's three required `.mlmodelc` bundles are present in the cache.
     nonisolated func isInstalled(_ entry: ModelManifestEntry) -> Bool {
-        let folder = modelsBaseDir.appendingPathComponent(entry.extractedFolderName, isDirectory: true)
+        Self.hasRequiredBundles(modelsBaseDir.appendingPathComponent(entry.extractedFolderName, isDirectory: true))
+    }
+
+    nonisolated private static func hasRequiredBundles(_ folder: URL) -> Bool {
         let fm = FileManager.default
-        return Self.requiredBundles.allSatisfy { bundle in
+        return requiredBundles.allSatisfy { bundle in
             fm.fileExists(atPath: folder.appendingPathComponent(bundle).path)
+        }
+    }
+
+    /// The published tarballs wrap the model in an extra folder of the same name,
+    /// so search a few levels down for the directory that holds the bundles.
+    nonisolated private static func findModelRoot(in dir: URL, depth: Int = 3) -> URL? {
+        if hasRequiredBundles(dir) { return dir }
+        guard depth > 0,
+              let children = try? FileManager.default.contentsOfDirectory(
+                  at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles
+              )
+        else { return nil }
+        for child in children where (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            if let root = findModelRoot(in: child, depth: depth - 1) { return root }
+        }
+        return nil
+    }
+
+    /// Earlier builds installed the tarball's wrapper folder as-is, leaving the
+    /// model one level too deep. Flatten it in place instead of re-downloading.
+    private func repairNestedInstall(_ entry: ModelManifestEntry) {
+        let finalDest = modelsBaseDir.appendingPathComponent(entry.extractedFolderName, isDirectory: true)
+        guard !isInstalled(entry), let root = Self.findModelRoot(in: finalDest), root != finalDest else { return }
+        let fm = FileManager.default
+        let staging = modelsBaseDir.appendingPathComponent(".\(entry.extractedFolderName)-\(UUID().uuidString)")
+        do {
+            try fm.moveItem(at: root, to: staging)
+            try fm.removeItem(at: finalDest)
+            try fm.moveItem(at: staging, to: finalDest)
+            logger.info("Flattened nested install of \(entry.id, privacy: .public)")
+        } catch {
+            logger.error("Failed to flatten \(entry.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -195,6 +237,7 @@ final class HebrewModelDownloader {
     ///
     /// - Throws: `HebrewModelDownloadError` on network failure, SHA mismatch, or extraction error.
     func download(_ entry: ModelManifestEntry) async throws {
+        repairNestedInstall(entry)
         guard !isInstalled(entry) else {
             progress = 1.0
             return
@@ -249,7 +292,9 @@ final class HebrewModelDownloader {
         try await extract(tarball: downloadedURL, to: extractDir)
 
         // Atomic move into final cache location
-        let extractedSource = extractDir.appendingPathComponent(entry.extractedFolderName, isDirectory: true)
+        guard let extractedSource = Self.findModelRoot(in: extractDir) else {
+            throw HebrewModelDownloadError.missingBundles(archive: entry.downloadURL.lastPathComponent)
+        }
         let finalDest = modelsBaseDir.appendingPathComponent(entry.extractedFolderName, isDirectory: true)
 
         do {

@@ -64,7 +64,7 @@ struct AppConfig: Equatable {
     /// Custom HuggingFace repo for the Hebrew model. Empty = use local HebrewModelDownloader cache.
     var hebrewWhisperModelRepo: String = ""
     /// WhisperKit model used when `language == "en"`. Defaults to the recommended OpenAI turbo.
-    var englishWhisperModel: String = "openai_whisper-large-v3-turbo"
+    var englishWhisperModel: String = "openai_whisper-large-v3_turbo"
     /// Custom HuggingFace repo for the English model. Empty = use argmaxinc/whisperkit-coreml.
     var englishWhisperModelRepo: String = ""
 
@@ -195,7 +195,7 @@ extension AppConfig {
         case "medium": "openai_whisper-medium"
         case "large-v2": "openai_whisper-large-v2"
         case "large-v3": "openai_whisper-large-v3"
-        case "large-v3-turbo", "large-v3_turbo": "openai_whisper-large-v3_turbo"
+        case "large-v3-turbo", "large-v3_turbo", "openai_whisper-large-v3-turbo": "openai_whisper-large-v3_turbo"
         default: name
         }
     }
@@ -281,7 +281,7 @@ enum ConfigManager {
             s.disable_reduced_performance_mode ?? cfg.disableReducedPerformanceMode
         cfg.hebrewWhisperModel = s.hebrew_model ?? cfg.hebrewWhisperModel
         cfg.hebrewWhisperModelRepo = s.hebrew_model_repo ?? cfg.hebrewWhisperModelRepo
-        cfg.englishWhisperModel = s.english_model ?? cfg.englishWhisperModel
+        cfg.englishWhisperModel = s.english_model.map(AppConfig.canonicalWhisperModel) ?? cfg.englishWhisperModel
         cfg.englishWhisperModelRepo = s.english_model_repo ?? cfg.englishWhisperModelRepo
     }
 

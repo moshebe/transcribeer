@@ -64,6 +64,33 @@ final class TranscriptionService {
     /// Current state of the loaded model.
     var modelState: ModelState = .unloaded
 
+    /// The WhisperKit model currently being downloaded or loaded. `nil` when
+    /// no `loadModel` call is in flight.
+    var modelLoadActivity: ModelLoadActivity?
+
+    struct ModelLoadActivity: Equatable {
+        enum Phase: Equatable {
+            /// Fraction is `nil` until the hub reports the total size.
+            case downloading(fraction: Double?)
+            /// Includes CoreML compiling the model for this Mac's Neural Engine,
+            /// which can take minutes the first time a model is loaded.
+            case loading
+        }
+
+        let modelName: String
+        var phase: Phase
+    }
+
+    /// Set when the last attempt to download or install a model failed, so the
+    /// History window can explain why transcription didn't start. Cleared on
+    /// the next attempt or when the user dismisses it.
+    var modelInstallFailure: ModelInstallFailure?
+
+    struct ModelInstallFailure: Equatable {
+        let modelName: String
+        let message: String
+    }
+
     /// Language WhisperKit detected during the most recent `auto` transcription.
     /// `nil` when the last transcription used an explicit language code, or when
     /// no transcription has run yet. Cleared at the start of each new transcription.
@@ -132,13 +159,7 @@ final class TranscriptionService {
             && loadedModelRepo == modelRepo
         guard !alreadyLoaded else { return }
 
-        let downloadBase = Self.modelsDir
-        try FileManager.default.createDirectory(
-            at: downloadBase, withIntermediateDirectories: true
-        )
-
         let canonical = AppConfig.canonicalWhisperModel(name)
-        let cachedFolder = Self.cachedModelFolder(variant: canonical, downloadBase: downloadBase, repo: modelRepo)
 
         // RAM pre-flight: warn when available memory is less than 1.5× the model's
         // expected footprint. Loading continues regardless — the warning surfaces in
@@ -152,25 +173,25 @@ final class TranscriptionService {
             }
         }
 
-        // If the model is already on disk, skip the download branch entirely and
-        // start from the load state. Otherwise WhisperKit would still hit the network
-        // to verify the snapshot (and our UI would say "Downloading…").
-        modelState = cachedFolder != nil ? .loading : .downloading
-
-        let config = WhisperKitConfig(
-            model: canonical,
-            downloadBase: downloadBase,
-            modelRepo: modelRepo,
-            modelFolder: cachedFolder?.path,
-            computeOptions: Self.aneComputeOptions,
-            verbose: false,
-            logLevel: .none,
-            prewarm: true,
-            load: true,
-            download: cachedFolder == nil
-        )
+        let modelFolder = try await ensureModelOnDisk(canonical, repo: modelRepo)
+        modelState = .loading
+        modelLoadActivity = ModelLoadActivity(modelName: canonical, phase: .loading)
+        defer { modelLoadActivity = nil }
 
         do {
+            let config = WhisperKitConfig(
+                model: canonical,
+                downloadBase: Self.modelsDir,
+                modelRepo: modelRepo,
+                modelFolder: modelFolder.path,
+                computeOptions: Self.aneComputeOptions,
+                verbose: false,
+                logLevel: .none,
+                prewarm: true,
+                load: true,
+                download: false
+            )
+
             let kit = try await WhisperKit(config)
             kit.modelStateCallback = { [weak self] _, newState in
                 Task { @MainActor in
@@ -182,48 +203,80 @@ final class TranscriptionService {
             modelState = kit.modelState
             loadedModelName = name
             loadedModelRepo = modelRepo
-        } catch WhisperError.modelsUnavailable(let detail) {
+        } catch {
             modelState = .unloaded
-            throw TranscriptionError.modelNotFound(
-                model: canonical,
-                repo: modelRepo ?? "argmaxinc/whisperkit-coreml",
-                detail: detail
-            )
+            throw error
         }
     }
 
-    /// Returns the on-disk folder for a WhisperKit variant if it's already been
-    /// downloaded, matching the layout `HubApi` produces under `downloadBase`.
-    private static func cachedModelFolder(variant: String, downloadBase: URL, repo: String?) -> URL? {
-        let owner: String
-        let repoName: String
-        if let repo {
-            let parts = repo.split(separator: "/", maxSplits: 1)
-            guard parts.count == 2 else { return nil }
-            owner = String(parts[0])
-            repoName = String(parts[1])
-        } else {
-            owner = "argmaxinc"
-            repoName = "whisperkit-coreml"
+    /// Makes sure `canonical` is in the local model cache, downloading it when
+    /// missing. Download progress is published through `modelLoadActivity`.
+    ///
+    /// ivrit.ai models aren't in argmaxinc/whisperkit-coreml; they ship as
+    /// tarballs installed by `HebrewModelDownloader` into the same cache layout.
+    func ensureModelOnDisk(_ canonical: String, repo modelRepo: String?) async throws -> URL {
+        modelInstallFailure = nil
+        do {
+            return try await fetchModelIfNeeded(canonical, repo: modelRepo)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            modelInstallFailure = ModelInstallFailure(modelName: canonical, message: error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func fetchModelIfNeeded(_ canonical: String, repo modelRepo: String?) async throws -> URL {
+        let downloadBase = Self.modelsDir
+        if let cached = WhisperModelCache.folder(variant: canonical, repo: modelRepo, downloadBase: downloadBase) {
+            return cached
+        }
+        try FileManager.default.createDirectory(at: downloadBase, withIntermediateDirectories: true)
+
+        if modelRepo == nil, let entry = ModelManifest.all.first(where: { $0.id == canonical }) {
+            try await HebrewModelDownloader.shared.download(entry)
+            let folder = WhisperModelCache.folder(variant: canonical, repo: nil, downloadBase: downloadBase)
+            guard let folder else {
+                throw TranscriptionError.modelNotFound(
+                    model: canonical,
+                    repo: entry.downloadURL.absoluteString,
+                    detail: "installed archive is missing CoreML bundles"
+                )
+            }
+            return folder
         }
 
-        let folder = downloadBase
-            .appendingPathComponent("models", isDirectory: true)
-            .appendingPathComponent(owner, isDirectory: true)
-            .appendingPathComponent(repoName, isDirectory: true)
-            .appendingPathComponent(variant, isDirectory: true)
-
-        // Minimum viable set of CoreML bundles WhisperKit needs to load.
-        let required = [
-            "AudioEncoder.mlmodelc",
-            "TextDecoder.mlmodelc",
-            "MelSpectrogram.mlmodelc",
-        ]
-        let fileManager = FileManager.default
-        let allPresent = required.allSatisfy { name in
-            fileManager.fileExists(atPath: folder.appendingPathComponent(name).path)
+        let repo = modelRepo ?? WhisperModelCache.defaultRepo
+        modelState = .downloading
+        modelLoadActivity = ModelLoadActivity(modelName: canonical, phase: .downloading(fraction: nil))
+        do {
+            let folder = try await WhisperKit.download(
+                variant: canonical,
+                downloadBase: downloadBase,
+                from: repo,
+                progressCallback: { [weak self] progress in
+                    let fraction = progress.fractionCompleted
+                    Task { @MainActor in self?.applyDownloadProgress(fraction) }
+                }
+            )
+            return folder
+        } catch {
+            modelState = .unloaded
+            modelLoadActivity = nil
+            if case WhisperError.modelsUnavailable(let detail) = error {
+                throw TranscriptionError.modelNotFound(model: canonical, repo: repo, detail: detail)
+            }
+            throw error
         }
-        return allPresent ? folder : nil
+    }
+
+    /// Hub progress fires per chunk; only publish whole-percent changes so the
+    /// banner doesn't re-render hundreds of times per second.
+    private func applyDownloadProgress(_ fraction: Double) {
+        guard case .downloading(let current) = modelLoadActivity?.phase else { return }
+        let rounded = (fraction * 100).rounded(.down) / 100
+        guard current != rounded else { return }
+        modelLoadActivity?.phase = .downloading(fraction: rounded)
     }
 
     /// Transcribe a session directory.
@@ -265,10 +318,17 @@ final class TranscriptionService {
         let originalLanguage = config.language
         let config = await routeAutoLanguage(session: session, config: config)
         let effective = effectiveModel(for: config)
+        let canonical = AppConfig.canonicalWhisperModel(effective.name)
+
+        // Download up front so progress is visible; ChunkedTranscriber then loads
+        // the model from the cache instead of asking the hub for it.
+        _ = try await ensureModelOnDisk(canonical, repo: effective.repo)
+        modelLoadActivity = ModelLoadActivity(modelName: canonical, phase: .loading)
+        defer { modelLoadActivity = nil }
 
         var coreCfg = TranscribeerCore.AppConfig()
         coreCfg.language = config.language
-        coreCfg.whisperModel = effective.name
+        coreCfg.whisperModel = canonical
         coreCfg.whisperModelRepo = effective.repo ?? ""
         coreCfg.diarization = config.diarization
         coreCfg.numSpeakers = config.numSpeakers
@@ -390,6 +450,10 @@ extension TranscriptionService {
         case let (mic?, nil):              progress = mic
         case let (nil, sys?):              progress = sys
         case let (mic?, sys?):             progress = (mic + sys) / 2
+        }
+        // The first transcribed chunk means the model finished loading.
+        if let progress, progress > 0, case .loading = modelLoadActivity?.phase {
+            modelLoadActivity = nil
         }
     }
 }

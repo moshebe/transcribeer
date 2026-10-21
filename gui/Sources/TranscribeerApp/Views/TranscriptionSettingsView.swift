@@ -107,7 +107,7 @@ struct TranscriptionSettingsView: View {
                     get: { config.hebrewWhisperModel },
                     set: { config.hebrewWhisperModel = $0; save() }
                 ),
-                downloader: HebrewModelDownloader()
+                downloader: .shared
             )
         } header: {
             Text("Hebrew")

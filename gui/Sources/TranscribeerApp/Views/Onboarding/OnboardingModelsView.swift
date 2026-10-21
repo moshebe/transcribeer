@@ -53,11 +53,11 @@ struct OnboardingModelsView: View {
     // MARK: - English row
 
     private var englishRow: some View {
-        let entry = ModelManifest.hebrewTurbo // English uses WhisperKit's openai_whisper-large-v3-turbo
+        let entry = ModelManifest.hebrewTurbo // English uses WhisperKit's openai_whisper-large-v3_turbo
         _ = entry // suppress unused warning; English model info is static
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("openai_whisper-large-v3-turbo")
+                Text("openai_whisper-large-v3_turbo")
                     .font(.body)
                 Text("English \u{b7} ~1.6 GB")
                     .font(.caption)
@@ -90,7 +90,7 @@ struct OnboardingModelsView: View {
                 isDirectory: true
             )
         let modelDir = snapshotDir.appendingPathComponent(
-            "openai_whisper-large-v3-turbo",
+            "openai_whisper-large-v3_turbo",
             isDirectory: true
         )
         return FileManager.default.fileExists(atPath: modelDir.path)

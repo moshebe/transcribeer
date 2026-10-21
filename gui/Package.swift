@@ -11,14 +11,15 @@ let package = Package(
 
         .package(url: "https://github.com/kyle-n/HighlightedTextEditor.git", from: "2.1.0"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui.git", from: "2.4.1"),
+        .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),
         .package(path: "../capture"),
     ],
     targets: [
-        // Thin C wrapper around libarchive for .tar.zst extraction without requiring
-        // an external `zstd` binary. libarchive.2.dylib ships on every macOS 10.9+
-        // and includes built-in zstd support.
+        // Thin C wrapper for .tar.zst extraction without requiring an external
+        // `zstd` binary: libzstd decompresses, system libarchive unpacks the tar.
         .target(
             name: "ZstdExtractor",
+            dependencies: [.product(name: "libzstd", package: "zstd")],
             path: "Sources/ZstdExtractor",
             publicHeadersPath: "include",
             linkerSettings: [

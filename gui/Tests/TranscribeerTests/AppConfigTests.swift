@@ -59,6 +59,7 @@ struct AppConfigTests {
     @Test("canonicalWhisperModel migrates legacy short names")
     func canonicalWhisperModel() {
         #expect(AppConfig.canonicalWhisperModel("large-v3-turbo") == "openai_whisper-large-v3_turbo")
+        #expect(AppConfig.canonicalWhisperModel("openai_whisper-large-v3-turbo") == "openai_whisper-large-v3_turbo")
         #expect(AppConfig.canonicalWhisperModel("large-v3") == "openai_whisper-large-v3")
         #expect(AppConfig.canonicalWhisperModel("base") == "openai_whisper-base")
         // Already-canonical names pass through unchanged.

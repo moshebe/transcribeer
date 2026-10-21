@@ -164,7 +164,7 @@ final class ModelCatalogService {
             return 6_000_000_000
         case "openai_whisper-large-v3":
             return 6_000_000_000
-        case "openai_whisper-large-v3_turbo", "openai_whisper-large-v3-turbo":
+        case "openai_whisper-large-v3_turbo":
             return 1_600_000_000
         default:
             return nil
@@ -226,7 +226,7 @@ extension ModelCatalogService {
             customRepo: nil
         ),
         CuratedModelEntry(
-            id: "openai_whisper-large-v3-turbo",
+            id: "openai_whisper-large-v3_turbo",
             displayName: "English — turbo (recommended)",
             language: "en",
             isRecommended: true,

@@ -50,7 +50,11 @@ struct HistoryView: View {
             sidebar
         } detail: {
             VStack(spacing: 0) {
-                accessibilityBanner
+                NoticesSection(
+                    config: config,
+                    transcriptionService: runner.transcriptionService,
+                    hebrewDownloader: .shared
+                )
                 detailPanel
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -183,34 +187,6 @@ struct HistoryView: View {
                 .foregroundStyle(.orange)
                 .lineLimit(1)
                 .help(msg)
-        }
-    }
-
-    @ViewBuilder
-    private var accessibilityBanner: some View {
-        if config.zoomEnricherEnabled, !AccessibilityGuard.isTrusted {
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Accessibility permission not granted")
-                        .font(.headline)
-                    Text("Zoom meeting titles and participants won't be captured until Transcribeer "
-                        + "is enabled in System Settings → Privacy & Security → Accessibility.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                Button("Open Settings") {
-                    AccessibilityGuard.prompt()
-                    AccessibilityGuard.openSystemSettings()
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.orange.opacity(0.12))
-            .overlay(Rectangle().frame(height: 1).foregroundStyle(.orange.opacity(0.4)), alignment: .bottom)
         }
     }
 

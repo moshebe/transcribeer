@@ -23,7 +23,7 @@ struct OnboardingSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var step: OnboardingStep = .welcome
-    @State private var downloader = HebrewModelDownloader()
+    private let downloader = HebrewModelDownloader.shared
     @State private var probe = PermissionsProbe()
 
     var body: some View {

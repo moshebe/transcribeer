@@ -1,13 +1,17 @@
 #include "include/ZstdExtractor.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zstd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 // Pull in libarchive from the macOS dyld shared cache.
-// The library is always present on macOS 10.9+ and includes zstd support.
-// We declare only the symbols we need so we don't require the headers.
+// The system build has no built-in zstd filter (it shells out to a `zstd`
+// binary, which isn't on PATH for a launchd agent), so we decompress with
+// libzstd and feed libarchive the plain tar stream.
+// We declare only the libarchive symbols we need so we don't require the headers.
 
 // Opaque types
 struct archive;
@@ -29,7 +33,14 @@ struct archive_entry;
 extern struct archive *archive_read_new(void);
 extern int archive_read_support_filter_all(struct archive *);
 extern int archive_read_support_format_all(struct archive *);
-extern int archive_read_open_filename(struct archive *, const char *filename, size_t block_size);
+typedef long long archive_read_callback(struct archive *, void *client_data, const void **buffer);
+typedef int archive_open_callback(struct archive *, void *client_data);
+typedef int archive_close_callback(struct archive *, void *client_data);
+extern int archive_read_open(
+    struct archive *, void *client_data,
+    archive_open_callback *, archive_read_callback *, archive_close_callback *
+);
+extern void archive_set_error(struct archive *, int err, const char *fmt, ...);
 extern int archive_read_next_header(struct archive *, struct archive_entry **);
 extern int archive_read_data_block(struct archive *, const void **buf, size_t *size, long long *offset);
 extern int archive_read_close(struct archive *);
@@ -64,6 +75,59 @@ static void copy_error(struct archive *a, char *buf, int bufLen) {
     }
 }
 
+struct zstd_source {
+    FILE *file;
+    ZSTD_DCtx *dctx;
+    void *inBuf;
+    size_t inBufSize;
+    ZSTD_inBuffer input;
+    void *outBuf;
+    size_t outBufSize;
+    size_t lastResult;
+};
+
+static long long zstd_source_read(struct archive *a, void *client_data, const void **buffer) {
+    struct zstd_source *src = client_data;
+    while (1) {
+        if (src->input.pos == src->input.size) {
+            size_t n = fread(src->inBuf, 1, src->inBufSize, src->file);
+            if (n == 0) {
+                if (ferror(src->file)) {
+                    archive_set_error(a, -1, "read error on compressed archive");
+                    return -1;
+                }
+                if (src->lastResult != 0) {
+                    archive_set_error(a, -1, "truncated zstd stream");
+                    return -1;
+                }
+                return 0;
+            }
+            src->input.src = src->inBuf;
+            src->input.size = n;
+            src->input.pos = 0;
+        }
+
+        ZSTD_outBuffer output = { src->outBuf, src->outBufSize, 0 };
+        size_t ret = ZSTD_decompressStream(src->dctx, &output, &src->input);
+        if (ZSTD_isError(ret)) {
+            archive_set_error(a, -1, "zstd: %s", ZSTD_getErrorName(ret));
+            return -1;
+        }
+        src->lastResult = ret;
+        if (output.pos > 0) {
+            *buffer = src->outBuf;
+            return (long long)output.pos;
+        }
+    }
+}
+
+static void zstd_source_free(struct zstd_source *src) {
+    if (src->file) fclose(src->file);
+    if (src->dctx) ZSTD_freeDCtx(src->dctx);
+    free(src->inBuf);
+    free(src->outBuf);
+}
+
 int zstd_extract(
     const char *srcPath,
     const char *destDir,
@@ -92,10 +156,26 @@ int zstd_extract(
     archive_read_support_filter_all(reader);
     archive_read_support_format_all(reader);
 
-    int r = archive_read_open_filename(reader, srcPath, 16384);
+    struct zstd_source source = {0};
+    source.file = fopen(srcPath, "rb");
+    source.dctx = ZSTD_createDCtx();
+    source.inBufSize = ZSTD_DStreamInSize();
+    source.outBufSize = ZSTD_DStreamOutSize();
+    source.inBuf = malloc(source.inBufSize);
+    source.outBuf = malloc(source.outBufSize);
+    if (!source.file || !source.dctx || !source.inBuf || !source.outBuf) {
+        if (errorBuf && errorBufLen > 0)
+            strncpy(errorBuf, source.file ? "out of memory" : "cannot open archive", (size_t)(errorBufLen - 1));
+        zstd_source_free(&source);
+        archive_read_free(reader);
+        return -1;
+    }
+
+    int r = archive_read_open(reader, &source, NULL, zstd_source_read, NULL);
     if (r != ARCHIVE_OK) {
         copy_error(reader, errorBuf, errorBufLen);
         archive_read_free(reader);
+        zstd_source_free(&source);
         return r;
     }
 
@@ -104,6 +184,7 @@ int zstd_extract(
         if (errorBuf && errorBufLen > 0)
             strncpy(errorBuf, "archive_write_disk_new() failed", (size_t)(errorBufLen - 1));
         archive_read_free(reader);
+        zstd_source_free(&source);
         return -1;
     }
 
@@ -122,6 +203,7 @@ int zstd_extract(
             strncpy(errorBuf, "destDir path too long", (size_t)(errorBufLen - 1));
         archive_write_free(writer);
         archive_read_free(reader);
+        zstd_source_free(&source);
         return -1;
     }
     memcpy(prefix, destDir, destLen);
@@ -192,6 +274,7 @@ cleanup:
     archive_write_free(writer);
     archive_read_close(reader);
     archive_read_free(reader);
+    zstd_source_free(&source);
 
     return (r == ARCHIVE_EOF || r == ARCHIVE_OK) ? 0 : r;
 }

@@ -55,16 +55,7 @@ public enum ChunkedTranscriber {
             return TranscriptionOutput(segments: [], detectedLanguage: nil)
         }
 
-        let kitConfig = WhisperKitConfig(
-            model: modelName,
-            downloadBase: downloadBase,
-            modelRepo: modelRepo,
-            verbose: false,
-            logLevel: .none,
-            prewarm: true,
-            load: true,
-            download: true
-        )
+        let kitConfig = makeKitConfig(modelName: modelName, modelRepo: modelRepo, downloadBase: downloadBase)
 
         if !budget.allowParallel {
             return try await transcribeSequential(
@@ -192,6 +183,23 @@ public enum ChunkedTranscriber {
         /// Language code WhisperKit assigned to this chunk.
         /// Non-nil only when the caller requested auto-detection and a result was returned.
         let detectedLanguage: String?
+    }
+
+    /// Load straight from the cache when possible. A hub lookup would fail for
+    /// models that aren't published in the repo (e.g. locally installed ivrit.ai).
+    private static func makeKitConfig(modelName: String, modelRepo: String?, downloadBase: URL) -> WhisperKitConfig {
+        let cachedFolder = WhisperModelCache.folder(variant: modelName, repo: modelRepo, downloadBase: downloadBase)
+        return WhisperKitConfig(
+            model: modelName,
+            downloadBase: downloadBase,
+            modelRepo: modelRepo,
+            modelFolder: cachedFolder?.path,
+            verbose: false,
+            logLevel: .none,
+            prewarm: true,
+            load: true,
+            download: cachedFolder == nil
+        )
     }
 
     private static func transcribeChunk(
