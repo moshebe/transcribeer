@@ -200,9 +200,12 @@ public enum ChunkedTranscriber {
         language: String
     ) async throws -> ChunkOutput {
         let lang: String? = language == "auto" ? nil : language
+        // With the default prefill prompt, WhisperKit only detects the language
+        // when asked to. Otherwise a nil language falls back to English.
         let options = DecodingOptions(
             verbose: false,
             language: lang,
+            detectLanguage: lang == nil,
             chunkingStrategy: .vad
         )
         let results: [TranscriptionResult] = try await kit.transcribe(

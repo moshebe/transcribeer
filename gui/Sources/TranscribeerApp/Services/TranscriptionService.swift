@@ -260,7 +260,10 @@ final class TranscriptionService {
         timing: DualSourceTranscriber.TimingInfo
     ) async throws -> String {
         disarmIdleTimer()
+        lastDetectedLanguage = nil
 
+        let originalLanguage = config.language
+        let config = await routeAutoLanguage(session: session, config: config)
         let effective = effectiveModel(for: config)
 
         var coreCfg = TranscribeerCore.AppConfig()
@@ -276,7 +279,6 @@ final class TranscriptionService {
         micProgress = 0
         sysProgress = 0
         liveSegments = []
-        lastDetectedLanguage = nil
 
         let onMicProgress: @Sendable (Double) -> Void = { value in
             Task { @MainActor in self.applyMicProgress(value) }
@@ -312,8 +314,11 @@ final class TranscriptionService {
             task.cancel()
         }
 
-        // Persist detected language when the run was in auto mode.
-        if config.language == "auto", let detected = output.detectedLanguage, !detected.isEmpty {
+        // Persist detected language when the run was in auto mode (routing
+        // pins `config.language` to what it detected).
+        if Self.routedLanguages.contains(config.language), config.language != originalLanguage {
+            lastDetectedLanguage = config.language
+        } else if config.language == "auto", let detected = output.detectedLanguage, !detected.isEmpty {
             lastDetectedLanguage = detected
         }
 
@@ -385,37 +390,6 @@ extension TranscriptionService {
         case let (mic?, nil):              progress = mic
         case let (nil, sys?):              progress = sys
         case let (mic?, sys?):             progress = (mic + sys) / 2
-        }
-    }
-}
-
-// MARK: - Language routing
-
-@MainActor
-extension TranscriptionService {
-    /// Compute the effective (model name, repo) pair for the given config.
-    ///
-    /// Language-specific routing takes priority over the general `whisperModel`
-    /// setting so that a Hebrew recording always uses the ivrit.ai CoreML model
-    /// regardless of what the generic picker shows.
-    ///
-    /// - `"he"` → `config.hebrewWhisperModel` / `config.hebrewWhisperModelRepo`
-    /// - `"en"` → `config.englishWhisperModel` / `config.englishWhisperModelRepo`
-    /// - anything else (including `"auto"`) → `config.whisperModel` / `config.whisperModelRepo`
-    ///
-    /// An empty repo string resolves to `nil` (use the default HF repo or local cache).
-    func effectiveModel(for config: AppConfig) -> (name: String, repo: String?) {
-        switch config.language {
-        case "he":
-            let repo = config.hebrewWhisperModelRepo.isEmpty ? nil : config.hebrewWhisperModelRepo
-            return (config.hebrewWhisperModel, repo)
-        case "en":
-            let repo = config.englishWhisperModelRepo.isEmpty ? nil : config.englishWhisperModelRepo
-            return (config.englishWhisperModel, repo)
-        default:
-            // "auto" or any unlisted language: use the general model setting
-            let repo = config.whisperModelRepo.isEmpty ? nil : config.whisperModelRepo
-            return (config.whisperModel, repo)
         }
     }
 }
