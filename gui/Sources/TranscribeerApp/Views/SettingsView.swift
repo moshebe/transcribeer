@@ -285,6 +285,7 @@ struct SettingsView: View {
             guard !Task.isCancelled else { return }
             ollamaModels = models
         }
+        .task { await ModelsDevService.shared.refreshIfStale() }
     }
 
     @ViewBuilder

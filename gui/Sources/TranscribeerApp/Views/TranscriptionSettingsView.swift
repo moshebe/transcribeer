@@ -42,6 +42,7 @@ struct TranscriptionSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, 8)
+        .task { await ModelsDevService.shared.refreshIfStale() }
         .onDisappear { saveTask?.cancel() }
         .task {
             // Seed the catalog with all currently-selected models so pickers
@@ -320,7 +321,7 @@ struct TranscriptionSettingsView: View {
                 selection: cloudModelBinding,
                 models: backend == .openai
                     ? ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]
-                    : SummarizationCatalog.geminiModels,
+                    : SummarizationCatalog.geminiTranscriptionModels,
                 onSubmit: { saveTask?.cancel(); save() }
             )
             SecureField("API key", text: $apiKey)

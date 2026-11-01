@@ -90,7 +90,10 @@ struct TranscribeerApp: App {
                 }
         } label: {
             MenuBarIcon(runner: runner)
-                .task { onFirstAppear() }
+                .task {
+                    onFirstAppear()
+                    await ModelsDevService.shared.refreshIfStale()
+                }
         }
         .menuBarExtraStyle(.menu)
 
