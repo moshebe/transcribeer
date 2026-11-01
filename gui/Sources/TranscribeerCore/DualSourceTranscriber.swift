@@ -339,16 +339,16 @@ public enum DualSourceTranscriber {
         budget: TranscriptionBudget = .conservative,
         onProgress: (@Sendable (Double) -> Void)?
     ) async throws -> TranscriptionOutput {
-        try AudioValidation.ensureAudibleSignal(at: mixed)
+        try ensureAudibleFunc(mixed)
 
-        let chunkedOutput = try await ChunkedTranscriber.transcribe(
-            audioURL: mixed,
-            modelName: cfg.whisperModel,
-            modelRepo: cfg.whisperModelRepo.isEmpty ? nil : cfg.whisperModelRepo,
-            downloadBase: AppConfig.modelsDir,
-            language: cfg.language,
-            budget: budget,
-            onProgress: onProgress
+        let chunkedOutput = try await transcribeChunkFunc(
+            mixed,
+            cfg.whisperModel,
+            cfg.whisperModelRepo.isEmpty ? nil : cfg.whisperModelRepo,
+            AppConfig.modelsDir,
+            cfg.language,
+            budget,
+            onProgress
         )
         let segments = chunkedOutput.segments
 
@@ -358,10 +358,7 @@ public enum DualSourceTranscriber {
                 LabeledSegment(start: seg.start, end: seg.end, speaker: "Speaker", text: seg.text)
             }
         } else {
-            let diarSegments = try await DiarizationService.diarize(
-                audioURL: mixed,
-                numSpeakers: cfg.numSpeakers > 0 ? cfg.numSpeakers : nil
-            )
+            let diarSegments = try await diarizeFunc(mixed, cfg.numSpeakers > 0 ? cfg.numSpeakers : nil)
             labeled = TranscriptFormatter.assignSpeakers(
                 whisperSegments: segments,
                 diarSegments: diarSegments

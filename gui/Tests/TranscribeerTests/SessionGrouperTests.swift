@@ -140,10 +140,9 @@ struct SessionGrouperTests {
         #expect(groups[0].title == "November 2023")
     }
 
-    @Test("Group order follows Today → Yesterday → weekday → month → year")
-    func groupOrdering() {
-        // Inputs intentionally shuffled to prove order is driven by the
-        // first appearance of each bucket's date range, not input order.
+    @Test("Groups keep the order of their first appearance in the input")
+    func preservesGroupInputOrder() {
+        // SessionManager owns chronological sorting; grouping preserves that order.
         let older2023: Session = {
             var comps = DateComponents()
             comps.year = 2023

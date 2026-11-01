@@ -160,30 +160,6 @@ struct SessionManagerRenameTests {
         #expect(SessionManager.displayName(dirB) == "Beta")
     }
 
-    @Test("Writing B's name to A's directory does not affect B")
-    func writingWrongNameToADoesNotAffectB() throws {
-        let dirA = try Self.makeSessionDir(prefix: "session-a")
-        let dirB = try Self.makeSessionDir(prefix: "session-b")
-        defer {
-            try? FileManager.default.removeItem(at: dirA)
-            try? FileManager.default.removeItem(at: dirB)
-        }
-
-        SessionManager.setName(dirA, "Or")
-        SessionManager.setName(dirB, "Vasi")
-
-        // Simulate the bug: `flushRename` erroneously writes B's name ("Vasi")
-        // to A's path because `onRename` already captured A while local `name`
-        // still held B's value.
-        SessionManager.setName(dirA, "Vasi")  // the wrong write
-
-        // B must be unaffected — this is what the fix ensures at the UI layer.
-        #expect(SessionManager.sessionDetail(dirB).name == "Vasi", "B must be unchanged")
-        // A is now incorrectly "Vasi" on disk — this test documents the
-        // observable disk-level consequence of the bug before the fix.
-        #expect(SessionManager.sessionDetail(dirA).name == "Vasi", "A was overwritten by the wrong name")
-    }
-
     @Test("sessionRow names are independent for two sessions with the same initial name")
     func sameInitialNameRemainsIndependent() throws {
         let dirA = try Self.makeSessionDir(prefix: "session-a")

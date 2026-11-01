@@ -29,9 +29,11 @@ struct LanguageDetectorTests {
     }
 
     @Test("last window never runs past the end")
-    func windowStartsClamped() {
+    func windowStartsClamped() throws {
         let duration = 61.0
-        for start in LanguageDetector.windowStarts(duration: duration) {
+        let starts = LanguageDetector.windowStarts(duration: duration)
+        try #require(starts.count == 3)
+        for start in starts {
             #expect(start + LanguageDetector.windowSeconds <= duration)
         }
     }

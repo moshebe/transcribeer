@@ -82,41 +82,41 @@ fi
 
 echo "  Session: $new_session"
 
-# Artifact inventory
+# Check that the required artifacts are non-empty.
 echo ""
 echo "→ Checking session artifacts"
 missing=()
 for f in audio.m4a audio.mic.caf audio.sys.caf timing.json; do
-  if [[ -f "$new_session$f" ]]; then
+  if [[ -s "$new_session$f" ]]; then
     size=$(stat -f%z "$new_session$f")
     echo "  ✓ $f ($size bytes)"
   else
-    echo "  ✗ $f missing"
+    echo "  ✗ $f missing or empty"
     missing+=("$f")
   fi
 done
 
 if [[ ${#missing[@]} -gt 0 ]]; then
   echo ""
-  echo "✗ Missing required artifacts: ${missing[*]}" >&2
+  echo "✗ Missing or empty required artifacts: ${missing[*]}" >&2
   exit 1
 fi
 
 # Transcript check (the app pipeline writes transcript.txt automatically)
 echo ""
-if [[ -f "$new_session/transcript.txt" ]]; then
+if [[ -s "$new_session/transcript.txt" ]]; then
   lines=$(wc -l < "$new_session/transcript.txt" | tr -d ' ')
   echo "→ transcript.txt: $lines lines"
   echo "  First 5:"
   head -5 "$new_session/transcript.txt" | sed 's/^/    /'
 else
-  echo "✗ transcript.txt missing — pipeline may have errored" >&2
+  echo "✗ transcript.txt missing or empty — pipeline may have errored" >&2
   echo "  Check: $new_session/run.log"
   exit 1
 fi
 
 echo ""
-echo "✓ Verification complete — full capture → mix → transcribe pipeline works"
+echo "✓ Required artifacts are non-empty. Audio and transcript quality still need the checks below."
 echo ""
 echo "Manual checks to perform:"
 echo "  1. audio.m4a plays back cleanly (Cmd-click → Quick Look)"

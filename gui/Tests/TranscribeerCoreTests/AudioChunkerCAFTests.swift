@@ -125,14 +125,6 @@ struct AudioChunkerCAFTests {
         #expect(decoded.processingFormat.channelCount == 1)
     }
 
-    @Test("wavDuration accepts any AVAudioFile-readable source")
-    func durationOfCAF() throws {
-        let src = try Self.writeSilentCAF(durationSeconds: 3)
-        defer { try? FileManager.default.removeItem(at: src) }
-        let duration = try #require(AudioChunker.wavDuration(url: src))
-        #expect(abs(duration - 3.0) < 0.01)
-    }
-
     // MARK: - Resampling
 
     @Test("targetSampleRate downsamples 48 kHz CAF to 16 kHz WAV chunks")
@@ -157,7 +149,7 @@ struct AudioChunkerCAFTests {
         let decoded = try AVAudioFile(forReading: chunk.url)
         #expect(decoded.processingFormat.sampleRate == 16_000)
         #expect(decoded.processingFormat.channelCount == 1)
-        let duration = try #require(AudioChunker.wavDuration(url: chunk.url))
+        let duration = try decodedAudioDuration(chunk.url)
         #expect(abs(duration - 2.0) < 0.05)
 
         // 2 s mono Int16 @ 16 kHz ≈ 64 KB; @ 48 kHz it would be ~192 KB.
@@ -220,7 +212,7 @@ struct AudioChunkerCAFTests {
         let decoded = try AVAudioFile(forReading: chunk.url)
         #expect(decoded.processingFormat.sampleRate == 16_000)
         #expect(decoded.processingFormat.channelCount == 1)
-        let duration = try #require(AudioChunker.wavDuration(url: chunk.url))
+        let duration = try decodedAudioDuration(chunk.url)
         #expect(abs(duration - 2.0) < 0.1)
     }
 
@@ -278,7 +270,7 @@ struct AudioChunkerCAFTests {
         )
         #expect(chunks.count == 1)
         let chunk = try #require(chunks.first)
-        let duration = try #require(AudioChunker.wavDuration(url: chunk.url))
+        let duration = try decodedAudioDuration(chunk.url)
         #expect(abs(duration - 10.3) < 0.05)
     }
 

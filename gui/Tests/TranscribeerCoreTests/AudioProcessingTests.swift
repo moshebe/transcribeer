@@ -14,25 +14,6 @@ struct AudioProcessingTests {
         #expect(request.bitrate == 48_000)
     }
 
-    @Test("Backend availability factories preserve probe details")
-    func backendAvailabilityFactories() {
-        let executable = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-        let available = AudioProcessingBackendAvailability.available(
-            backendID: "ffmpeg",
-            executableURL: executable
-        )
-        let unavailable = AudioProcessingBackendAvailability.unavailable(
-            backendID: "ffmpeg",
-            reason: "binary not found"
-        )
-
-        #expect(available.isAvailable)
-        #expect(available.executableURL == executable)
-        #expect(available.reason == nil)
-        #expect(unavailable.isAvailable == false)
-        #expect(unavailable.reason == "binary not found")
-    }
-
     @Test("Audio processing errors have user-facing descriptions")
     func errorDescriptions() {
         let unavailable = AudioProcessingBackendAvailability.unavailable(

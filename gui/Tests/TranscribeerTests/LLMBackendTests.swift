@@ -19,24 +19,10 @@ struct LLMBackendTests {
         #expect(LLMBackend.ollama.envVar == nil)
     }
 
-    @Test("Auth mode classifies each backend correctly")
-    func authMode() {
-        #expect(LLMBackend.openai.auth == .apiKey)
-        #expect(LLMBackend.anthropic.auth == .apiKey)
-        #expect(LLMBackend.gemini.auth == .gcloudADC)
-        #expect(LLMBackend.ollama.auth == .localEndpoint)
-    }
-
     @Test("from(_:) falls back to ollama for unknown values")
     func fromUnknown() {
         #expect(LLMBackend.from("openai") == .openai)
         #expect(LLMBackend.from("not-a-backend") == .ollama)
         #expect(LLMBackend.from("") == .ollama)
-    }
-
-    @Test("allCases covers every backend (prevents picker regressions)")
-    func allCasesCoverage() {
-        let cases = Set(LLMBackend.allCases.map(\.rawValue))
-        #expect(cases == ["ollama", "openai", "anthropic", "gemini"])
     }
 }

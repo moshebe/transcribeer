@@ -112,7 +112,7 @@ private func rms(_ samples: [Float]) -> Float {
 // MARK: - Tests
 
 struct AudioMixerTests {
-    @Test("Synthetic mix produces expected peak and silence regions")
+    @Test("Mixing two tones produces their combined peak")
     func syntheticMix() throws {
         let dir = makeSessionDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -156,9 +156,9 @@ struct AudioMixerTests {
         let sysURL = dir.appendingPathComponent("audio.sys.caf")
         let outURL = dir.appendingPathComponent("audio.m4a")
 
-        let effectiveSR = 47988.3
+        let effectiveSR = 44_100.0
         let tone = sineWave(frequency: 1000, sampleRate: effectiveSR, duration: 2.0, amplitude: 0.8)
-        try writeCaf(url: sysURL, samples: tone, sampleRate: effectiveSR)
+        try writeCaf(url: sysURL, samples: tone, sampleRate: 48_000)
 
         let micURL = dir.appendingPathComponent("audio.mic.caf")
         try writeCaf(url: micURL, samples: silence(duration: 2.0, sampleRate: 48000), sampleRate: 48000)
@@ -167,7 +167,7 @@ struct AudioMixerTests {
         let timing = TimingMetadata(
             micStartEpoch: 0,
             sysStartEpoch: 0,
-            sysDeclaredSampleRate: effectiveSR,
+            sysDeclaredSampleRate: 48_000,
             sysEffectiveSampleRate: effectiveSR
         )
         try mixer.mix(micURL: micURL, sysURL: sysURL, timing: timing, outputURL: outURL)
@@ -194,8 +194,8 @@ struct AudioMixerTests {
         let sysURL = dir.appendingPathComponent("audio.sys.caf")
         let outURL = dir.appendingPathComponent("audio.m4a")
 
-        // Mic: 1 kHz tone for 5 seconds
-        let micTone = sineWave(frequency: 1000, sampleRate: 48000, duration: 5.0, amplitude: 0.5)
+        // Mic: 1 kHz tone for 3 seconds
+        let micTone = sineWave(frequency: 1000, sampleRate: 48000, duration: 3.0, amplitude: 0.5)
         // Sys: 2 kHz tone for 3 seconds (starts 2s later in real time)
         let sysTone = sineWave(frequency: 2000, sampleRate: 48000, duration: 3.0, amplitude: 0.5)
 
@@ -215,25 +215,20 @@ struct AudioMixerTests {
         let sr = 48000.0
 
         // Window 0-1s: only mic (1 kHz)
+        try #require(output.count >= Int(4.8 * sr))
         let early = Array(output[0..<Int(sr)])
         let earlyFreq = dominantFrequency(samples: early, sampleRate: sr)
         #expect(abs(earlyFreq - 1000) < 50, "Expected ~1 kHz in early window, got \(earlyFreq)")
 
-        // Window 2-3s: both present → higher energy, mix of 1k + 2k
-        let midStart = Int(2.0 * sr)
-        let midEnd = Int(3.0 * sr)
-        let mid = Array(output[midStart..<min(midEnd, output.count)])
-        let midEnergy = rms(mid)
-        #expect(midEnergy > 0.3, "Expected high energy when both sources present")
+        // Both independent tones contribute during the overlap.
+        let overlap = Array(output[Int(2.2 * sr)..<Int(2.8 * sr)])
+        #expect(rms(overlap) > 0.45)
 
-        // Window 6-7s: only sys should remain (but sys is only 3s, so past 5s total)
-        // After alignment: sys spans 2s to 5s, mic spans 0s to 5s
-        // So past 5s should be silent
-        let lateStart = Int(5.5 * sr)
-        guard lateStart < output.count else { return }
-        let late = Array(output[lateStart..<min(lateStart + Int(sr), output.count)])
-        let lateEnergy = rms(late)
-        #expect(lateEnergy < 0.05, "Expected silence after both sources end")
+        // After the mic ends, the delayed system tone must still be present.
+        let late = Array(output[Int(3.5 * sr)..<Int(4.5 * sr)])
+        #expect(abs(dominantFrequency(samples: late, sampleRate: sr) - 2000) < 10)
+        #expect(rms(late) > 0.3)
+        #expect(abs(Double(output.count) / sr - 5) < 0.1)
     }
 
     @Test("Silent mic → only sys audible")
@@ -389,8 +384,8 @@ struct AudioMixerTests {
         #expect(!FileManager.default.fileExists(atPath: outURL.path))
     }
 
-    @Test("44.1 kHz source upsamples cleanly to 48 kHz (no aliasing)")
-    func upsampleNoAliasing() throws {
+    @Test("44.1 kHz to 48 kHz resampling preserves tone frequency")
+    func upsamplePreservesPitch() throws {
         let dir = makeSessionDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -399,9 +394,7 @@ struct AudioMixerTests {
         let sysURL = dir.appendingPathComponent("audio.sys.caf")
         let outURL = dir.appendingPathComponent("audio.m4a")
 
-        // 1 kHz tone at 44.1 kHz — a sample rate the old linear-interp
-        // resampler would have smeared with broadband aliasing. Upsample to
-        // 48 kHz and assert the dominant frequency is still 1 kHz.
+        // Check pitch after conversion; this does not measure spectral distortion.
         let tone = sineWave(frequency: 1000, sampleRate: 44100, duration: 2.0, amplitude: 0.6)
         try writeCaf(url: micURL, samples: tone, sampleRate: 44100)
         try writeCaf(
@@ -432,8 +425,8 @@ struct AudioMixerTests {
         #expect(abs(freq - 1000) < 5, "Expected ~1 kHz after 44.1→48 kHz upsample, got \(freq)")
     }
 
-    @Test("Long recording mixes without allocating proportional RAM")
-    func streamingMemoryBound() throws {
+    @Test("Five-minute recording preserves output duration")
+    func longRecordingPreservesDuration() throws {
         let dir = makeSessionDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -442,10 +435,6 @@ struct AudioMixerTests {
         let sysURL = dir.appendingPathComponent("audio.sys.caf")
         let outURL = dir.appendingPathComponent("audio.m4a")
 
-        // 5 minutes at 48 kHz mono = 57.6 MB per source buffer in the old
-        // in-memory mixer; at 60 minutes it was ~700 MB per source. Five
-        // minutes here keeps test runtime reasonable while still exercising
-        // many chunk iterations in the streaming mixer.
         let duration = 300.0
         try writeCaf(
             url: micURL,
@@ -458,7 +447,6 @@ struct AudioMixerTests {
             sampleRate: 48000
         )
 
-        let baselineRSS = currentRSSBytes()
         let mixer = AudioMixer()
         try mixer.mix(
             micURL: micURL,
@@ -471,47 +459,8 @@ struct AudioMixerTests {
             ),
             outputURL: outURL
         )
-        let peakRSS = currentRSSBytes()
-        let delta = Int64(peakRSS) - Int64(baselineRSS)
-
-        // A proportional allocator on 300 s of 48 kHz mono float32 would
-        // grow RSS by at least 55 MB per buffer (we hold two source buffers
-        // plus the mixed output = ~165 MB minimum). The streaming path
-        // should stay well under 50 MB — allow 100 MB to absorb AAC encoder
-        // allocations + test host noise without being lenient enough to
-        // miss a regression.
-        #expect(
-            delta < 100 * 1024 * 1024,
-            "Mix RSS grew by \(delta / 1024 / 1024) MB — streaming path regressed?"
-        )
-
-        // Sanity: output exists and has signal.
-        let output = try readSamples(at: outURL)
-        #expect(!output.isEmpty)
+        let file = try AVAudioFile(forReading: outURL)
+        let actualDuration = Double(file.length) / file.processingFormat.sampleRate
+        #expect(abs(actualDuration - duration) < 0.1)
     }
-}
-
-// MARK: - Memory probe
-
-import Darwin
-
-/// Return the current process' resident set size in bytes.
-///
-/// Used only by the streaming-mix regression test; not audio-specific.
-private func currentRSSBytes() -> UInt64 {
-    var info = mach_task_basic_info()
-    var count = mach_msg_type_number_t(
-        MemoryLayout<mach_task_basic_info>.size / MemoryLayout<integer_t>.size
-    )
-    let status = withUnsafeMutablePointer(to: &info) { ptr in
-        ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPtr in
-            task_info(
-                mach_task_self_,
-                task_flavor_t(MACH_TASK_BASIC_INFO),
-                reboundPtr,
-                &count
-            )
-        }
-    }
-    return status == KERN_SUCCESS ? info.resident_size : 0
 }

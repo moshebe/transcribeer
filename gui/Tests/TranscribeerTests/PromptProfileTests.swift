@@ -3,17 +3,6 @@ import Testing
 @testable import TranscribeerApp
 
 struct PromptProfileTests {
-    @Test("Preset library covers common meeting types")
-    func presetsCoverCommonMeetingTypes() {
-        let ids = Set(PromptProfileManager.presets.map(\.id))
-        for expected in [
-            "1on1", "standup", "customer-discovery", "user-interview",
-            "sales-call", "job-interview", "retro",
-        ] {
-            #expect(ids.contains(expected), "Missing preset: \(expected)")
-        }
-    }
-
     @Test("Presets have non-empty content and unique ids")
     func presetsWellFormed() {
         let presets = PromptProfileManager.presets

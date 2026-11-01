@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import TranscribeerApp
@@ -9,15 +10,14 @@ import TranscribeerCore
 private func makeEntry(
     id: String = "test-model",
     sha256: String = "__PENDING__",
-    url: URL? = nil,
     folderName: String = "test-model"
-) -> ModelManifestEntry {
+) throws -> ModelManifestEntry {
     ModelManifestEntry(
         id: id,
         displayName: "Test Model",
         sizeBytes: 1024,
         sha256: sha256,
-        downloadURL: url ?? URL(string: "https://example.com/test.tar.zst")!,
+        downloadURL: try #require(URL(string: "https://download.invalid/model.tar.zst")),
         extractedFolderName: folderName
     )
 }
@@ -50,67 +50,72 @@ private func makeFakeTarball(in dir: URL, folderName: String) throws -> URL {
     process.arguments = ["--zstd", "-cf", tarball.path, "-C", sourceDir.path, folderName]
     try process.run()
     process.waitUntilExit()
+    try #require(process.terminationStatus == 0)
     return tarball
 }
 
 // MARK: - Mock URLProtocol helpers
 
-/// URLProtocol that serves a file at a registered path for download tasks.
-/// For download tasks the system provides the file via `didFinishDownloadingTo`;
-/// we simulate this by finishing the data load so the task writes it to disk.
-private final class FileServingURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var fileURL: URL?
-
+/// All test requests stay inside URLSession's protocol layer.
+private final class DownloadURLProtocol: URLProtocol, @unchecked Sendable {
     override static func canInit(with _: URLRequest) -> Bool { true }
     override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let fileURL = Self.fileURL,
-              let data = try? Data(contentsOf: fileURL),
-              let requestURL = request.url else {
-            client?.urlProtocol(self, didFailWithError: URLError(.fileDoesNotExist))
+        if let directory = request.value(forHTTPHeaderField: "X-Stall-Directory") {
+            do {
+                try Data().write(to: URL(fileURLWithPath: directory).appendingPathComponent("started"))
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
             return
         }
-        guard let response = HTTPURLResponse(
-            url: requestURL,
-            statusCode: 200,
-            httpVersion: nil,
-            headerFields: ["Content-Length": "\(data.count)"]
-        ) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+        guard let path = request.value(forHTTPHeaderField: "X-Fixture-Path"),
+              let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
             return
         }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: data)
-        client?.urlProtocolDidFinishLoading(self)
+        do {
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            guard let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Length": "\(data.count)"]
+            ) else {
+                throw URLError(.badServerResponse)
+            }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
     }
 
-    override func stopLoading() {}
-}
-
-/// URLProtocol that always fails with a network error.
-private final class FailingURLProtocol: URLProtocol, @unchecked Sendable {
-    override static func canInit(with _: URLRequest) -> Bool { true }
-    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+    override func stopLoading() {
+        if let directory = request.value(forHTTPHeaderField: "X-Stall-Directory") {
+            try? Data().write(to: URL(fileURLWithPath: directory).appendingPathComponent("cancelled"))
+        }
     }
-
-    override func stopLoading() {}
 }
 
-private func makeMockSession(servingFile fileURL: URL) -> URLSession {
-    FileServingURLProtocol.fileURL = fileURL
-    let cfg = URLSessionConfiguration.ephemeral
-    cfg.protocolClasses = [FileServingURLProtocol.self]
-    return URLSession(configuration: cfg)
+private func makeMockSession(servingFile: URL? = nil, stallDirectory: URL? = nil) -> URLSession {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [DownloadURLProtocol.self]
+    var headers: [String: String] = [:]
+    if let servingFile { headers["X-Fixture-Path"] = servingFile.path }
+    if let stallDirectory { headers["X-Stall-Directory"] = stallDirectory.path }
+    config.httpAdditionalHeaders = headers
+    return URLSession(configuration: config)
 }
 
-private func makeFailingSession() -> URLSession {
-    let cfg = URLSessionConfiguration.ephemeral
-    cfg.protocolClasses = [FailingURLProtocol.self]
-    return URLSession(configuration: cfg)
+private func waitForFile(_ url: URL) async throws {
+    for _ in 0..<200 {
+        if FileManager.default.fileExists(atPath: url.path) { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try #require(FileManager.default.fileExists(atPath: url.path), "Expected callback marker: \(url.path)")
 }
 
 // MARK: - Tests
@@ -126,7 +131,7 @@ struct HebrewModelDownloaderTests {
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
         let downloader = HebrewModelDownloader(modelsBaseDir: tmpDir)
-        let entry = makeEntry()
+        let entry = try makeEntry()
         #expect(!downloader.isInstalled(entry))
     }
 
@@ -141,7 +146,7 @@ struct HebrewModelDownloaderTests {
         try FileManager.default.createDirectory(at: modelFolder, withIntermediateDirectories: true)
 
         let downloader = HebrewModelDownloader(modelsBaseDir: tmpDir)
-        let entry = makeEntry(folderName: folderName)
+        let entry = try makeEntry(folderName: folderName)
         #expect(!downloader.isInstalled(entry))
     }
 
@@ -156,7 +161,7 @@ struct HebrewModelDownloaderTests {
         try createRequiredBundles(in: modelFolder)
 
         let downloader = HebrewModelDownloader(modelsBaseDir: tmpDir)
-        let entry = makeEntry(folderName: folderName)
+        let entry = try makeEntry(folderName: folderName)
         #expect(downloader.isInstalled(entry))
     }
 
@@ -176,7 +181,7 @@ struct HebrewModelDownloaderTests {
         )
 
         let downloader = HebrewModelDownloader(modelsBaseDir: tmpDir)
-        let entry = makeEntry(folderName: folderName)
+        let entry = try makeEntry(folderName: folderName)
         #expect(!downloader.isInstalled(entry))
     }
 
@@ -192,9 +197,10 @@ struct HebrewModelDownloaderTests {
         try createRequiredBundles(in: tmpDir.appendingPathComponent(folderName))
 
         // Use a failing session — if download were attempted it would throw.
-        let session = makeFailingSession()
+        let session = makeMockSession()
+        defer { session.invalidateAndCancel() }
         let downloader = HebrewModelDownloader(session: session, modelsBaseDir: tmpDir)
-        let entry = makeEntry(folderName: folderName)
+        let entry = try makeEntry(folderName: folderName)
 
         // Should not throw; session is never used.
         try await downloader.download(entry)
@@ -215,7 +221,8 @@ struct HebrewModelDownloaderTests {
         try Data("not a real tarball".utf8).write(to: fakeFile)
 
         let session = makeMockSession(servingFile: fakeFile)
-        let entry = makeEntry(
+        defer { session.invalidateAndCancel() }
+        let entry = try makeEntry(
             sha256: "0000000000000000000000000000000000000000000000000000000000000000",
             folderName: "mismatch-model"
         )
@@ -232,96 +239,59 @@ struct HebrewModelDownloaderTests {
             }
         }
 
-        // Tarball must not be left behind in modelsBaseDir
-        let modelFolder = modelsBaseDir.appendingPathComponent("mismatch-model")
-        #expect(!FileManager.default.fileExists(atPath: modelFolder.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: modelsBaseDir.path).isEmpty)
     }
 
-    @Test("download skips verification when sha256 is __PENDING__")
+    @Test("Download installs archive content with verified or pending checksums", arguments: [false, true])
     @MainActor
-    func downloadSkipsVerificationWhenPending() async throws {
-        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
-
-        let folderName = "pending-model"
-        // Build a real tarball so extraction succeeds, then serve it via file:// URL
-        let tarball = try makeFakeTarball(in: tmpDir, folderName: folderName)
-
-        let modelsBaseDir = tmpDir.appendingPathComponent("cache")
-        // Use default URLSession — file:// URLs work natively with downloadTask
-        let entry = makeEntry(sha256: "__PENDING__", url: tarball, folderName: folderName)
-        let downloader = HebrewModelDownloader(modelsBaseDir: modelsBaseDir)
-
-        // Should succeed without throwing despite not knowing the real sha256
-        try await downloader.download(entry)
-        #expect(downloader.isInstalled(entry))
-    }
-
-    // MARK: Extraction and installation
-
-    @Test("download extracts and installs model into modelsBaseDir")
-    @MainActor
-    func downloadExtractsToCorrectLocation() async throws {
-        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
-
-        let folderName = "real-model"
-        // Build a real tarball and serve via file:// URL (no mock needed)
-        let tarball = try makeFakeTarball(in: tmpDir, folderName: folderName)
-
-        let modelsBaseDir = tmpDir.appendingPathComponent("cache")
-        let entry = makeEntry(sha256: "__PENDING__", url: tarball, folderName: folderName)
-        let downloader = HebrewModelDownloader(modelsBaseDir: modelsBaseDir)
+    func installsArchive(verifyChecksum: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tarball = try makeFakeTarball(in: directory, folderName: "installed-model")
+        let data = try Data(contentsOf: tarball)
+        let checksum = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let entry = try makeEntry(
+            sha256: verifyChecksum ? checksum : "__PENDING__",
+            folderName: "installed-model"
+        )
+        let cache = directory.appendingPathComponent("cache")
+        let session = makeMockSession(servingFile: tarball)
+        defer { session.invalidateAndCancel() }
+        let downloader = HebrewModelDownloader(session: session, modelsBaseDir: cache)
 
         try await downloader.download(entry)
 
-        let finalFolder = modelsBaseDir.appendingPathComponent(folderName)
-        #expect(FileManager.default.fileExists(atPath: finalFolder.path))
+        let marker = cache.appendingPathComponent("installed-model/AudioEncoder.mlmodelc/model.espresso.shape")
+        #expect(try Data(contentsOf: marker) == Data("test".utf8))
         #expect(downloader.isInstalled(entry))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cache.path) == ["installed-model"])
     }
 
     // MARK: Cancellation cleanup
 
-    @Test("cancelled download leaves no orphaned files in modelsBaseDir")
+    @Test("Cancellation stops the request and removes download staging files", .timeLimit(.minutes(1)))
     @MainActor
-    func cancelledDownloadLeavesNoOrphanedFiles() async throws {
-        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
+    func cancellationRemovesStagingFiles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = directory.appendingPathComponent("cache")
+        let session = makeMockSession(stallDirectory: directory)
+        defer { session.invalidateAndCancel() }
+        let downloader = HebrewModelDownloader(session: session, modelsBaseDir: cache)
+        let entry = try makeEntry(folderName: "cancelled-model")
+        let task = Task { try await downloader.download(entry) }
+        defer { task.cancel() }
 
-        // Stall the download indefinitely using a custom protocol that never delivers data
-        final class StallingProtocol: URLProtocol, @unchecked Sendable {
-            override static func canInit(with _: URLRequest) -> Bool { true }
-            override static func canonicalRequest(for req: URLRequest) -> URLRequest { req }
-            override func startLoading() { /* stall intentionally */ }
-            override func stopLoading() {}
-        }
+        try await waitForFile(directory.appendingPathComponent("started"))
+        let staging = try FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)
+        try #require(staging.count == 1)
+        #expect(FileManager.default.fileExists(atPath: staging[0].appendingPathComponent("extract").path))
+        task.cancel()
 
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.protocolClasses = [StallingProtocol.self]
-        let session = URLSession(configuration: cfg)
-
-        let modelsBaseDir = tmpDir.appendingPathComponent("cache")
-        let entry = makeEntry(folderName: "cancelled-model")
-        let downloader = HebrewModelDownloader(session: session, modelsBaseDir: modelsBaseDir)
-
-        let downloadTask = Task {
-            try await downloader.download(entry)
-        }
-
-        // Give the download a moment to start then cancel it
-        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
-        downloadTask.cancel()
-
-        // Wait for task to settle
-        _ = try? await downloadTask.value
-
-        // modelsBaseDir should either not exist or be empty
-        let fm = FileManager.default
-        if fm.fileExists(atPath: modelsBaseDir.path) {
-            let contents = (try? fm.contentsOfDirectory(atPath: modelsBaseDir.path)) ?? []
-            #expect(contents.isEmpty)
-        }
-        // The model should not be considered installed
-        #expect(!downloader.isInstalled(entry))
+        await #expect(throws: CancellationError.self) { try await task.value }
+        try await waitForFile(directory.appendingPathComponent("cancelled"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
+        #expect(downloader.isInstalled(entry) == false)
     }
 }

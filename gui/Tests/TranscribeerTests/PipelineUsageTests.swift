@@ -55,6 +55,8 @@ struct PipelineUsageTests {
     func totalTokensRequiresBothSides() {
         let onlyInput = PipelineUsage.fixture(inputTokens: 100, outputTokens: nil)
         #expect(onlyInput.totalTokens == nil)
+        let onlyOutput = PipelineUsage.fixture(inputTokens: nil, outputTokens: 50)
+        #expect(onlyOutput.totalTokens == nil)
         let both = PipelineUsage.fixture(inputTokens: 100, outputTokens: 50)
         #expect(both.totalTokens == 150)
     }
@@ -63,8 +65,11 @@ struct PipelineUsageTests {
     func rejectsMalformedPayloads() {
         let missingModel: [String: Any] = [
             "backend": "openai",
-            "completed_at": "2026-05-12T08:30:00Z",
+            "completed_at": "2026-05-12T08:30:00.000Z",
         ]
+        var valid = missingModel
+        valid["model"] = "gpt-4o"
+        #expect(PipelineUsage(dict: valid) != nil)
         #expect(PipelineUsage(dict: missingModel) == nil)
     }
 }

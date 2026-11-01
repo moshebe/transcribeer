@@ -21,11 +21,18 @@ struct TextMatcherTests {
         #expect(highlighted.count == 3)
         let active = attributed.runs.filter { $0.backgroundColor == .orange }
         #expect(active.count == 1)
+        let activeText = active.map { String(attributed[$0.range].characters) }
+        #expect(activeText == ["foo"])
+        let activeOffsets = active.map { run in
+            attributed.characters.distance(from: attributed.startIndex, to: run.range.lowerBound)
+        }
+        #expect(activeOffsets == [4])
     }
 
     @Test("Empty query leaves text unstyled")
     func emptyQuery() {
         let attributed = TextMatcher.highlighted(text: "hello", query: "", activeOccurrence: nil)
+        #expect(String(attributed.characters) == "hello")
         #expect(attributed.runs.allSatisfy { $0.backgroundColor == nil })
     }
 }

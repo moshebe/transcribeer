@@ -125,6 +125,13 @@ struct DualAudioRecorderTests {
         let file = try AVAudioFile(forReading: micURL)
         #expect(file.processingFormat.channelCount == 1)
         #expect(file.length == 100)
+        let mono = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 100))
+        try file.read(into: mono)
+        let data = try #require(mono.floatChannelData)
+        try #require(mono.frameLength == 100)
+        for index in 0..<100 {
+            #expect(abs(data[0][index] - 0.4) < 0.0001)
+        }
     }
 
     @Test("Effective sample rate is computed from sys timing")

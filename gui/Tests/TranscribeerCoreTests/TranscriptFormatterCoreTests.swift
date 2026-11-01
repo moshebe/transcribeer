@@ -72,11 +72,10 @@ struct TranscriptFormatterCoreTests {
         #expect(result[0].speaker == "A")
     }
 
-    @Test("Midpoint containment works as nearest (distance = 0)")
+    @Test("Zero-duration segment uses midpoint containment in the nearest-speaker fallback")
     func midpointContainmentIsNearestDistance() {
-        // Whisper segment 5-7, no overlap with diar segments.
-        // Midpoint 6.0 is contained by diar 5.5-6.5 → distance 0 → wins.
-        let whisper = [TranscriptSegment(start: 5, end: 7, text: "gap")]
+        // A point has no positive overlap, so this must reach the fallback.
+        let whisper = [TranscriptSegment(start: 6, end: 6, text: "point")]
         let diar = [
             DiarSegment(start: 0, end: 4, speaker: "X"),
             DiarSegment(start: 5.5, end: 6.5, speaker: "Y"),

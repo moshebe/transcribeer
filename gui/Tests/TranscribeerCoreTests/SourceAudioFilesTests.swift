@@ -7,8 +7,8 @@ struct SourceAudioFilesTests {
     func preferredURLRawFirst() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let raw = SourceAudioFiles.rawURL(in: dir, source: .mic)
-        let compressed = SourceAudioFiles.compressedURL(in: dir, source: .mic)
+        let raw = dir.appendingPathComponent("audio.mic.caf")
+        let compressed = dir.appendingPathComponent("audio.mic.m4a")
         try Data("raw".utf8).write(to: raw)
         try Data("compressed".utf8).write(to: compressed)
 
@@ -19,7 +19,7 @@ struct SourceAudioFilesTests {
     func preferredURLCompressedFallback() throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let compressed = SourceAudioFiles.compressedURL(in: dir, source: .sys)
+        let compressed = dir.appendingPathComponent("audio.sys.m4a")
         try Data("compressed".utf8).write(to: compressed)
 
         #expect(SourceAudioFiles.preferredURL(in: dir, source: .sys) == compressed)

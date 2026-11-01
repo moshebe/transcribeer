@@ -123,16 +123,30 @@ struct PipelineIntegrationTests {
         let mixedURL = sessionDir.appendingPathComponent("audio.m4a")
         try writeM4A(samples: (0..<24_000).map { _ in Float(0.1) }, at: mixedURL)
 
-        // Stub transcription: legacy path calls ChunkedTranscriber.transcribe
-        // directly (not via DualSourceTranscriber's transcribeChunkFunc seam),
-        // so we can't mock that without touching the production code further.
-        // Instead, assert the selector behavior: dual path only triggers when
-        // CAF sidecars exist; the legacy file layout falls through.
-        let micURL = sessionDir.appendingPathComponent("audio.mic.caf")
-        let sysURL = sessionDir.appendingPathComponent("audio.sys.caf")
-        #expect(!FileManager.default.fileExists(atPath: micURL.path))
-        #expect(!FileManager.default.fileExists(atPath: sysURL.path))
-        #expect(FileManager.default.fileExists(atPath: mixedURL.path))
+        try await dualSourceTranscriberMockLock.withLock {
+            let original = DualSourceTranscriber.transcribeChunkFunc
+            defer { DualSourceTranscriber.transcribeChunkFunc = original }
+            var receivedURL: URL?
+            DualSourceTranscriber.transcribeChunkFunc = { url, _, _, _, _, _, _ in
+                receivedURL = url
+                return .init(
+                    segments: [TranscriptSegment(start: 0, end: 0.5, text: "Legacy speech")],
+                    detectedLanguage: "en"
+                )
+            }
+            var config = AppConfig()
+            config.diarization = "none"
+            let output = try await DualSourceTranscriber.transcribe(
+                session: sessionDir,
+                cfg: config,
+                timing: .init(micStartEpoch: nil, sysStartEpoch: nil)
+            )
+
+            #expect(receivedURL == mixedURL)
+            #expect(output.segments.map(\.text) == ["Legacy speech"])
+            #expect(output.segments.map(\.speaker) == ["Speaker"])
+            #expect(output.detectedLanguage == "en")
+        }
     }
 
     @Test("Session dir contains exactly the sidecar set after a mixed recording")

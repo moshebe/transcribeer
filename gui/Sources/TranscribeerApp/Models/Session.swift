@@ -364,12 +364,6 @@ enum SessionManager {
         return order.compactMap { byName[$0] }
     }
 
-    /// Read the stored participants list. Returns an empty array when the
-    /// session has none yet (or when the JSON is malformed).
-    static func readParticipants(_ dir: URL) -> [SessionParticipant] {
-        decodeParticipants(readMeta(dir)["participants"])
-    }
-
     private static func decodeParticipants(_ raw: Any?) -> [SessionParticipant] {
         guard let array = raw as? [[String: Any]] else { return [] }
         return array.compactMap(SessionParticipant.init(dict:))

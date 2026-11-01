@@ -40,16 +40,6 @@ public enum AudioChunker {
         }
     }
 
-    /// Playback duration in seconds for any format `AVAudioFile` can open.
-    /// Returns `nil` on I/O failure or unreadable header (including truncated
-    /// WAVs that never made it past the 44-byte header).
-    public static func wavDuration(url: URL) -> Double? {
-        guard let file = try? AVAudioFile(forReading: url) else { return nil }
-        let rate = file.processingFormat.sampleRate
-        guard rate > 0 else { return nil }
-        return Double(file.length) / rate
-    }
-
     /// Split `source` into chunks of `chunkDuration` seconds.
     ///
     /// Returns chunks in chronological order. Files are written to `tempDir`.
