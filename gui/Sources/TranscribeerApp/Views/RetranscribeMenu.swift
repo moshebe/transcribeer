@@ -27,15 +27,17 @@ struct RetranscribeMenu: View {
     }
 
     private var languagePicker: some View {
-        Picker("Language", selection: $language) {
+        Picker("Transcript language", selection: $language) {
             ForEach(TranscriptionLanguage.allCases) { option in
-                Text(option == .auto ? "Default" : option.displayName).tag(option)
+                Text(option == .auto ? "Use Settings" : option.displayName).tag(option)
             }
         }
+        .pickerStyle(.menu)
         .labelsHidden()
         .fixedSize()
         .controlSize(.small)
-        .help("Override the transcription language — 'Default' uses the language from Settings")
+        .disabled(!canTranscribe)
+        .help("Spoken language for the next transcript. Click Re-transcribe to apply.")
     }
 
     private var backendMenu: some View {

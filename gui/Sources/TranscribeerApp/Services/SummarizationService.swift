@@ -202,10 +202,9 @@ enum SummarizationService {
             // Vertex AI's OpenAI-compatible endpoint authenticates via the
             // user's gcloud ADC, so no API key is stored or typed in-app.
             let project = try GCloudAuth.project()
-            let region = GCloudAuth.defaultRegion
             let url = try requireURL(
-                "https://\(region)-aiplatform.googleapis.com/v1beta1" +
-                "/projects/\(project)/locations/\(region)/endpoints/openapi"
+                "https://aiplatform.googleapis.com/v1" +
+                "/projects/\(project)/locations/global/endpoints/openapi"
             )
             let resolvedModel = model.hasPrefix("google/") ? model : "google/\(model)"
             return (.other(url, apiKey: try GCloudAuth.accessToken()), resolvedModel)

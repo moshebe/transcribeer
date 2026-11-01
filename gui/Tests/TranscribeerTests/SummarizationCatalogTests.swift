@@ -50,6 +50,22 @@ struct SummarizationCatalogTests {
 
 @MainActor
 struct PromptCompositionTests {
+    @Test("Summary output language overrides the profile and keeps the focus", arguments: [
+        (TranscriptionLanguage.hebrew, "Hebrew"),
+        (TranscriptionLanguage.english, "English"),
+    ])
+    func outputLanguage(language: TranscriptionLanguage, name: String) throws {
+        let prompt = try #require(PipelineRunner.composePrompt(
+            base: "Summarize in the source language.",
+            focus: "  List decisions.  ",
+            language: language
+        ))
+        #expect(prompt == "Summarize in the source language."
+            + "\n\nAdditional instructions from the user:\nList decisions."
+            + "\n\nOutput language: Write the summary in \(name). "
+            + "This overrides any earlier language instruction.")
+    }
+
     @Test("No focus text returns the base prompt unchanged")
     func noFocusPassesBaseThrough() {
         let base = "custom profile prompt"
@@ -78,6 +94,6 @@ struct PromptCompositionTests {
     @Test("Nil base and empty focus returns nil (service falls back to default)")
     func nothingToDo() {
         #expect(PipelineRunner.composePrompt(base: nil, focus: nil) == nil)
-        #expect(PipelineRunner.composePrompt(base: nil, focus: "") == nil)
+        #expect(PipelineRunner.composePrompt(base: nil, focus: "", language: .auto) == nil)
     }
 }

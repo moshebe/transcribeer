@@ -14,38 +14,40 @@ struct SummaryModelOption: Hashable, Identifiable, Sendable {
     var shortLabel: String { model }
 }
 
-/// Curated model catalog for the summary model picker.
-///
-/// The OpenAI/Anthropic/Gemini lists are intentionally small — we ship the
-/// names most people reach for rather than enumerate every release. Anything
-/// custom can still be set via Settings → Summarization; that value round-trips
-/// into this picker as the default selection.
-///
+/// Curated model names for the settings and summary menus.
 /// Ollama is fetched live via `/api/tags` because local installs vary wildly.
 enum SummarizationCatalog {
     /// Commonly-used OpenAI models for summarization.
     static let openaiModels = [
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "o3-mini",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6-luna",
+        "gpt-6-astra",
     ]
 
     /// Commonly-used Anthropic models.
     static let anthropicModels = [
-        "claude-sonnet-4-5",
-        "claude-sonnet-4-20250514",
-        "claude-opus-4-20250514",
-        "claude-3-5-haiku-latest",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-opus-5-5",
     ]
 
     /// Commonly-used Gemini (Vertex) models.
     static let geminiModels = [
-        "gemini-2.5-pro",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
         "gemini-2.5-flash",
-        "gemini-2.0-flash",
+        "gemini-2.5-pro",
     ]
+
+    static func models(for backend: LLMBackend, ollamaModels: [String] = []) -> [String] {
+        switch backend {
+        case .openai: openaiModels
+        case .anthropic: anthropicModels
+        case .gemini: geminiModels
+        case .ollama: ollamaModels
+        }
+    }
 
     /// Curated cloud catalog (Ollama is fetched live).
     static let staticOptions: [SummaryModelOption] =

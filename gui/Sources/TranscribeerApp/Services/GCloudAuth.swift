@@ -18,9 +18,6 @@ enum GCloudAuth {
         }
     }
 
-    /// Default Vertex AI region; users on other regions can override via config.
-    static let defaultRegion = "us-central1"
-
     /// Candidate gcloud install locations, searched in order. PATH is checked
     /// last because GUI apps launched from Finder don't inherit shell PATH.
     private static let gcloudCandidates = [

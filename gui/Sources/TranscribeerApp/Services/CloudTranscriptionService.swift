@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import os.log
 import TranscribeerCore
@@ -497,7 +498,8 @@ enum OpenAITranscription {
         audioURL: URL,
         model: String,
         language: String?,
-        apiKey: String
+        apiKey: String,
+        session: URLSession = .shared
     ) async throws -> [CoreSegment] {
         let boundary = "----transcribeer-\(UUID().uuidString)"
         var request = URLRequest(url: endpoint)
@@ -511,13 +513,14 @@ enum OpenAITranscription {
 
         var body = Data()
         body.appendField(boundary: boundary, name: "model", value: model)
-        body.appendField(boundary: boundary, name: "response_format", value: "verbose_json")
-        body.appendField(
-            boundary: boundary,
-            name: "timestamp_granularities[]",
-            value: "segment"
-        )
-        if let language { body.appendField(boundary: boundary, name: "language", value: language) }
+        if model == "whisper-1" {
+            body.appendField(boundary: boundary, name: "response_format", value: "verbose_json")
+            body.appendField(boundary: boundary, name: "timestamp_granularities[]", value: "segment")
+        }
+        if let language {
+            let field = model.hasPrefix("gpt-transcribe") ? "languages[]" : "language"
+            body.appendField(boundary: boundary, name: field, value: language)
+        }
         try body.appendFile(
             boundary: boundary,
             name: "file",
@@ -528,9 +531,11 @@ enum OpenAITranscription {
         body.append(Data("--\(boundary)--\r\n".utf8))
         request.httpBody = body
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try TranscriptionHTTP.checkOK(response: response, body: data, backend: "OpenAI")
-        return try parseResponse(data)
+        let audio = try AVAudioFile(forReading: audioURL)
+        let duration = Double(audio.length) / audio.processingFormat.sampleRate
+        return try parseResponse(data, fallbackDuration: duration)
     }
 
     struct Response: Decodable {
@@ -547,7 +552,7 @@ enum OpenAITranscription {
 
     /// Internal so unit tests can exercise the response shape directly
     /// without round-tripping through URLSession.
-    static func parseResponse(_ data: Data) throws -> [CoreSegment] {
+    static func parseResponse(_ data: Data, fallbackDuration: TimeInterval = 0) throws -> [CoreSegment] {
         let decoded: Response
         do {
             decoded = try JSONDecoder().decode(Response.self, from: data)
@@ -564,7 +569,7 @@ enum OpenAITranscription {
         // didn't return segment-level timestamps (some `gpt-4o-transcribe`
         // responses). Better than dropping the chunk silently.
         guard let text = decoded.text, !text.isEmpty else { return [] }
-        let end = decoded.duration ?? 0
+        let end = decoded.duration ?? fallbackDuration
         return [CoreSegment(start: 0, end: end, text: text)]
     }
 }
