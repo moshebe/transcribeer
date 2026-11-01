@@ -221,7 +221,7 @@ final class PipelineRunner {
             reportCaptureFailure("capture failed: \(err)", userFacing: err, logger: logger)
         case .noAudio:
             logger.log("no audio captured")
-            state = queueWorker == nil ? .idle : processingState
+            state = isProcessingActive ? processingState : .idle
         case .recorded:
             let size = (try? FileManager.default.attributesOfItem(
                 atPath: audioPath.path
@@ -233,8 +233,8 @@ final class PipelineRunner {
             if queueWorker != nil {
                 logger.log("queued behind \(processingQueue.count + 1) session(s) still processing")
             }
-            // Hand the UI back to whatever the queue is doing, then queue.
-            state = queueWorker == nil ? .idle : processingState
+            // Hand the UI back to whatever is still processing, then queue.
+            state = isProcessingActive ? processingState : .idle
             enqueueProcessing(QueuedSession(session: session, config: config))
         }
     }
