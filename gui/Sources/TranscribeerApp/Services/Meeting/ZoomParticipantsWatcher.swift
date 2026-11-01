@@ -21,6 +21,7 @@ final class ZoomParticipantsWatcher {
     private(set) var lastState: ZoomParticipantsReader.LookupState?
 
     private let pollInterval: Duration
+    private let lookup: @Sendable () -> ZoomParticipantsReader.LookupResult
     /// Emit a debug log every Nth identical poll so we can confirm the watcher
     /// is alive without spamming one line per second.
     private let pollDebugEvery: Int
@@ -28,9 +29,14 @@ final class ZoomParticipantsWatcher {
     private var stateStreak = 0
     private let logger = Logger(subsystem: "com.transcribeer", category: "zoom-participants")
 
-    init(pollInterval: Duration = .seconds(2), pollDebugEvery: Int = 30) {
+    init(
+        pollInterval: Duration = .seconds(2),
+        pollDebugEvery: Int = 30,
+        lookup: @escaping @Sendable () -> ZoomParticipantsReader.LookupResult = { ZoomParticipantsReader.lookup() },
+    ) {
         self.pollInterval = pollInterval
         self.pollDebugEvery = max(pollDebugEvery, 1)
+        self.lookup = lookup
     }
 
     // MARK: - Lifecycle
@@ -57,16 +63,18 @@ final class ZoomParticipantsWatcher {
 
     private func pollLoop() async {
         // First tick is immediate so the UI reacts without waiting a full interval.
-        pollOnce()
+        await pollOnce()
         while !Task.isCancelled {
             try? await Task.sleep(for: pollInterval)
             guard !Task.isCancelled else { break }
-            pollOnce()
+            await pollOnce()
         }
     }
 
-    private func pollOnce() {
-        let result = ZoomParticipantsReader.lookup()
+    func pollOnce() async {
+        let lookup = lookup
+        let result = await Task.detached(priority: .utility) { lookup() }.value
+        guard !Task.isCancelled else { return }
         applyResult(result)
     }
 

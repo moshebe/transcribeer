@@ -5,15 +5,12 @@ import os
 /// Observes camera and microphone activation and correlates with running meeting apps
 /// to decide whether the user is currently in a meeting.
 ///
-/// Detection rules (ported from OpenOats):
-/// - **Camera active** → immediate detection (trigger `.camera`). Treated as ground-truth
-///   for video calls, even if no known meeting app is running (captures edge cases
-///   like browser-based meeting rooms).
-/// - **Camera off** → 3s hysteresis. If mic is still active AND a meeting app is still
-///   running, downgrade trigger to `.micAndApp` and stay active; otherwise end.
+/// Detection rules:
 /// - **Mic active for ≥5s** + a known meeting app in the running apps list → detect
 ///   with trigger `.micAndApp`.
-/// - **Mic off** while triggered by `.micAndApp` → end immediately.
+/// - Camera activity can sustain an existing detection, but never starts one.
+/// - Zoom stays detected until its meeting-only helper exits, including while muted
+///   or while the camera is off. Other apps also use mic/camera release to detect the end.
 ///
 /// Mic alone never triggers (too noisy — voice memos, FaceTime audio apps, etc.).
 @Observable
@@ -51,8 +48,12 @@ final class MeetingDetector {
     private var isMicRunning = false
     private var micActiveAt: Date?
     /// Process whose termination ends the current detection. Set when detection
-    /// begins with a known app; `nil` for camera-only (e.g. browser meeting).
+    /// begins with a known app.
     private var endProcessBundleID: String?
+
+    private var hasMeetingOnlyProcess: Bool {
+        endProcessBundleID != nil && endProcessBundleID != detectedApp?.bundleID
+    }
 
     private let debounceSeconds: TimeInterval = 5
     private let cameraHysteresisSeconds: TimeInterval = 3
@@ -87,7 +88,7 @@ final class MeetingDetector {
         micStreamTask = Task { [weak self] in
             for await active in micSignals {
                 guard !Task.isCancelled else { break }
-                self?.handleMicSignal(active)
+                await self?.handleMicSignal(active)
             }
         }
 
@@ -108,7 +109,11 @@ final class MeetingDetector {
         }
 
         // Evaluate current state in case something is already running at launch.
-        if audioSource.isActive { handleMicSignal(true) }
+        if audioSource.isActive {
+            isMicRunning = true
+            micActiveAt = Date()
+            scheduleMicDebounce()
+        }
         if cameraSource.isActive { handleCameraSignal(true) }
     }
 
@@ -144,30 +149,26 @@ final class MeetingDetector {
         if active {
             cameraHysteresisTask?.cancel()
             cameraHysteresisTask = nil
-            let detected = scanForMeetingApp()
-            if !inMeeting {
-                beginDetection(
-                    app: detected?.app,
-                    endProcess: detected?.endProcessBundleID,
-                    trigger: .camera,
-                )
-            } else {
-                // Upgrade trigger to camera while both signals active.
+            if inMeeting {
                 trigger = .camera
             }
-        } else {
+        } else if inMeeting {
             cameraHysteresisTask?.cancel()
             let hysteresis = cameraHysteresisSeconds
             cameraHysteresisTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(hysteresis))
                 guard !Task.isCancelled else { return }
-                self?.evaluateCameraOff()
+                await self?.evaluateCameraOff()
             }
         }
     }
 
-    private func evaluateCameraOff() {
+    private func evaluateCameraOff() async {
         guard inMeeting else { return }
+        if hasMeetingOnlyProcess {
+            await evaluateEndProcessRunning()
+            return
+        }
 
         // If mic is still keeping a meeting app alive, downgrade trigger.
         if isMicRunning, micActiveAt != nil, detectedApp != nil {
@@ -180,7 +181,7 @@ final class MeetingDetector {
 
     // MARK: - Mic handling
 
-    private func handleMicSignal(_ active: Bool) {
+    private func handleMicSignal(_ active: Bool) async {
         isMicRunning = active
 
         if active {
@@ -190,7 +191,7 @@ final class MeetingDetector {
             micActiveAt = nil
             micDebounceTask?.cancel()
             micDebounceTask = nil
-            if inMeeting, trigger == .micAndApp, !isCameraRunning {
+            if inMeeting, trigger == .micAndApp, !isCameraRunning, !hasMeetingOnlyProcess {
                 endDetection()
                 return
             }
@@ -198,7 +199,7 @@ final class MeetingDetector {
             // Re-check immediately instead of waiting for the 3 s watchdog tick,
             // so auto-stop fires within a second of Zoom quitting the meeting.
             if inMeeting {
-                evaluateEndProcessRunning()
+                await evaluateEndProcessRunning()
             }
         }
     }
@@ -210,17 +211,18 @@ final class MeetingDetector {
         micDebounceTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(debounce))
             guard !Task.isCancelled else { return }
-            self?.evaluateMicAfterDebounce(activeSince: activeSince)
+            await self?.evaluateMicAfterDebounce(activeSince: activeSince)
         }
     }
 
-    private func evaluateMicAfterDebounce(activeSince: Date) {
+    private func evaluateMicAfterDebounce(activeSince: Date) async {
         // Mic went off during the sleep.
         guard let current = micActiveAt, current == activeSince else { return }
-        // Already detected via camera — nothing to do.
+        // A previous debounce may already have started detection.
         guard !inMeeting else { return }
         // Mic alone never triggers; require a meeting app.
-        guard let detected = scanForMeetingApp() else { return }
+        guard let detected = await scanForMeetingApp(),
+              !Task.isCancelled, micActiveAt == activeSince, !inMeeting else { return }
         beginDetection(app: detected.app, endProcess: detected.endProcessBundleID, trigger: .micAndApp)
     }
 
@@ -229,6 +231,12 @@ final class MeetingDetector {
     private func handleProcessEvent(_ event: ProcessLifecycleEvent) {
         switch event {
         case .launched(let bundleID):
+            let isMeetingApp = prioritizedApps.contains { app in
+                app.bundleID == bundleID || app.effectiveEndProcessBundleID == bundleID
+            } || customBundleIDs.contains(bundleID)
+            if !inMeeting, isMicRunning, isMeetingApp {
+                scheduleMicDebounce()
+            }
             // Watched process came back (e.g. user rejoined a Zoom meeting) while
             // a grace-period end was pending — cancel the pending end.
             guard bundleID == endProcessBundleID, endGraceTask != nil else { return }
@@ -292,8 +300,7 @@ final class MeetingDetector {
     /// Triggers `scheduleEndGrace()` when the keyed `endProcessBundleID` is no
     /// longer in the running set — covers the case where NSWorkspace's
     /// terminate notification is dropped (observed for `us.zoom.CptHost`).
-    /// No-op when the current detection has no `endProcessBundleID`
-    /// (e.g. browser-based meetings detected purely via camera).
+    /// No-op when the current detection has no `endProcessBundleID`.
     private func startEndProcessWatchdog() {
         stopEndProcessWatchdog()
         guard endProcessBundleID != nil else { return }
@@ -302,7 +309,7 @@ final class MeetingDetector {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { return }
-                self?.evaluateEndProcessRunning()
+                await self?.evaluateEndProcessRunning()
             }
         }
     }
@@ -312,12 +319,13 @@ final class MeetingDetector {
         endProcessPollTask = nil
     }
 
-    private func evaluateEndProcessRunning() {
+    private func evaluateEndProcessRunning() async {
         guard inMeeting,
               let bundleID = endProcessBundleID,
               endGraceTask == nil
         else { return }
-        let running = Set(processSource.runningSnapshot().map(\.bundleID))
+        let running = Set(await processSource.runningSnapshot().map(\.bundleID))
+        guard !Task.isCancelled, inMeeting, endProcessBundleID == bundleID, endGraceTask == nil else { return }
         if !running.contains(bundleID) {
             logger.info(
                 "end-process \(bundleID, privacy: .public) no longer running (watchdog) — scheduling grace end",
@@ -340,8 +348,8 @@ final class MeetingDetector {
         let endProcessBundleID: String
     }
 
-    private func scanForMeetingApp() -> DetectedMeetingApp? {
-        let snapshot = processSource.runningSnapshot()
+    private func scanForMeetingApp() async -> DetectedMeetingApp? {
+        let snapshot = await processSource.runningSnapshot()
         let runningBundleIDs = Set(snapshot.map(\.bundleID))
 
         guard let entry = Self.selectMeetingApp(

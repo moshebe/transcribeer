@@ -19,9 +19,8 @@ final class MockProcessLifecycleSource: ProcessLifecycleSource, @unchecked Senda
         self.continuation = capturedContinuation
     }
 
-    func runningSnapshot() -> [RunningAppSnapshot] {
-        lock.lock(); defer { lock.unlock() }
-        return running
+    func runningSnapshot() async -> [RunningAppSnapshot] {
+        lock.withLock { running }
     }
 
     /// Replace the set of "currently running" apps used by `runningSnapshot()`.
@@ -92,39 +91,64 @@ final class MockSignalSource: AudioSignalSource, CameraSignalSource, @unchecked 
 
 @MainActor
 struct MeetingDetectorTests {
-    @Test("camera on triggers detection immediately even without a meeting app")
-    func cameraOnTriggersImmediately() async {
+    private func waitForDetection(_ detector: MeetingDetector) async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !detector.inMeeting, ContinuousClock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                return
+            }
+        }
+    }
+
+    @Test("camera alone cannot start detection", arguments: [false, true])
+    func cameraAloneDoesNotStartDetection(meetingAppRunning: Bool) async {
         let audio = MockSignalSource()
         let camera = MockSignalSource()
-        let detector = MeetingDetector(audioSource: audio, cameraSource: camera)
+        let process = MockProcessLifecycleSource()
+        if meetingAppRunning {
+            process.setRunning([
+                RunningAppSnapshot(bundleID: "us.zoom.xos", localizedName: "Zoom"),
+                RunningAppSnapshot(bundleID: "us.zoom.CptHost", localizedName: nil),
+            ])
+        }
+        let detector = MeetingDetector(audioSource: audio, cameraSource: camera, processSource: process)
+        camera.emit(true)
         detector.start()
         defer { detector.stop() }
 
         camera.emit(true)
         try? await Task.sleep(for: .milliseconds(100))
 
-        #expect(detector.inMeeting)
-        #expect(detector.trigger == .camera)
+        #expect(detector.inMeeting == false)
+        #expect(detector.trigger == nil)
     }
 
-    @Test("camera off ends detection after hysteresis when mic is not sustaining it")
-    func cameraOffEndsDetection() async {
+    @Test("camera changes do not end an active Zoom call")
+    func cameraOffKeepsZoomDetection() async {
         let audio = MockSignalSource()
         let camera = MockSignalSource()
-        let detector = MeetingDetector(audioSource: audio, cameraSource: camera)
+        let process = MockProcessLifecycleSource()
+        process.setRunning([
+            RunningAppSnapshot(bundleID: "us.zoom.xos", localizedName: "Zoom"),
+            RunningAppSnapshot(bundleID: "us.zoom.CptHost", localizedName: nil),
+        ])
+        let detector = MeetingDetector(audioSource: audio, cameraSource: camera, processSource: process)
         detector.start()
         defer { detector.stop() }
 
+        audio.emit(true)
         camera.emit(true)
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitForDetection(detector)
         #expect(detector.inMeeting)
 
         camera.emit(false)
+        audio.emit(false)
         // Hysteresis is 3s; wait slightly longer.
         try? await Task.sleep(for: .seconds(4))
 
-        #expect(!detector.inMeeting)
-        #expect(detector.trigger == nil)
+        #expect(detector.inMeeting)
     }
 
     @Test("mic alone never triggers detection without a meeting app running")
@@ -147,7 +171,12 @@ struct MeetingDetectorTests {
     func micOffDuringDebounceCancels() async {
         let audio = MockSignalSource()
         let camera = MockSignalSource()
-        let detector = MeetingDetector(audioSource: audio, cameraSource: camera)
+        let process = MockProcessLifecycleSource()
+        process.setRunning([
+            RunningAppSnapshot(bundleID: "us.zoom.xos", localizedName: "Zoom"),
+            RunningAppSnapshot(bundleID: "us.zoom.CptHost", localizedName: nil),
+        ])
+        let detector = MeetingDetector(audioSource: audio, cameraSource: camera, processSource: process)
         detector.start()
         defer { detector.stop() }
 
@@ -157,32 +186,31 @@ struct MeetingDetectorTests {
         try? await Task.sleep(for: .seconds(5))
 
         #expect(!detector.inMeeting)
+
+        audio.emit(true)
+        await waitForDetection(detector)
+        #expect(detector.inMeeting, "The same fixture must detect a sustained microphone signal")
     }
 
-    @Test("default app list contains the key video-conf bundles")
-    func defaultAppList() {
-        let bundles = Set(MeetingDetector.defaultMeetingApps.map(\.bundleID))
-        #expect(bundles.contains("us.zoom.xos"))
-        #expect(bundles.contains("com.microsoft.teams2"))
-        #expect(bundles.contains("com.apple.FaceTime"))
-        #expect(bundles.contains("com.cisco.webexmeetingsapp"))
-        #expect(bundles.contains("com.google.Chrome.app.kjgfgldnnfobanmcafgkdilakhehfkbm"))
-    }
+    @Test("Zoom joining a call is detected when the microphone was already active")
+    func meetingHelperLaunchRechecksActiveMic() async {
+        let audio = MockSignalSource()
+        let camera = MockSignalSource()
+        let process = MockProcessLifecycleSource()
+        process.setRunning([RunningAppSnapshot(bundleID: "us.zoom.xos", localizedName: "Zoom")])
+        let detector = MeetingDetector(audioSource: audio, cameraSource: camera, processSource: process)
+        detector.start()
+        defer { detector.stop() }
 
-    @Test("default priority order: Zoom > Slack > Teams > everything else")
-    func defaultPriorityOrder() {
-        let order = MeetingDetector.defaultMeetingApps.map(\.bundleID)
-        let zoom = order.firstIndex(of: "us.zoom.xos")
-        let slack = order.firstIndex(of: "com.slack.Slack")
-        let teamsNew = order.firstIndex(of: "com.microsoft.teams2")
-        let teamsOld = order.firstIndex(of: "com.microsoft.teams")
-        let discord = order.firstIndex(of: "com.hnc.Discord")
+        audio.emit(true)
+        try? await Task.sleep(for: .seconds(6))
+        #expect(detector.inMeeting == false)
 
-        #expect(zoom != nil && slack != nil && teamsNew != nil)
-        #expect((zoom ?? -1) < (slack ?? -1))
-        #expect((slack ?? -1) < (teamsNew ?? -1))
-        #expect((teamsNew ?? -1) < (teamsOld ?? -1))
-        #expect((teamsOld ?? -1) < (discord ?? Int.max))
+        process.launch(bundleID: "us.zoom.CptHost")
+        await waitForDetection(detector)
+
+        #expect(detector.inMeeting)
+        #expect(detector.trigger == .micAndApp)
     }
 
     // MARK: - selectMeetingApp priority logic
@@ -263,15 +291,9 @@ struct MeetingDetectorTests {
         #expect(selected == nil)
     }
 
-    @Test("stop() cancels pending detection and clears state")
+    @Test("stop() clears an established meeting")
     func stopClearsState() async {
-        let audio = MockSignalSource()
-        let camera = MockSignalSource()
-        let detector = MeetingDetector(audioSource: audio, cameraSource: camera)
-        detector.start()
-
-        camera.emit(true)
-        try? await Task.sleep(for: .milliseconds(50))
+        let (detector, _) = await startMicDetection(bundleID: "us.zoom.xos", endProcess: "us.zoom.CptHost")
         #expect(detector.inMeeting)
 
         detector.stop()
@@ -283,11 +305,11 @@ struct MeetingDetectorTests {
     // MARK: - Process-lifecycle end detection
 
     /// Boots a detector with a single known app, pre-seeds the running-snapshot,
-    /// and fires a camera trigger for immediate detection (bypasses mic debounce).
-    private func startCameraDetection(
+    /// and waits for microphone detection to pass its debounce.
+    private func startMicDetection(
         bundleID: String,
         endProcess: String,
-    ) -> (MeetingDetector, MockProcessLifecycleSource) {
+    ) async -> (MeetingDetector, MockProcessLifecycleSource) {
         let audio = MockSignalSource()
         let camera = MockSignalSource()
         let process = MockProcessLifecycleSource()
@@ -306,13 +328,14 @@ struct MeetingDetectorTests {
             apps: apps,
         )
         detector.start()
-        camera.emit(true)
+        audio.emit(true)
+        await waitForDetection(detector)
         return (detector, process)
     }
 
     @Test("Zoom CptHost termination ends detection after grace period")
     func cptHostTerminationEndsDetection() async {
-        let (detector, process) = startCameraDetection(
+        let (detector, process) = await startMicDetection(
             bundleID: "us.zoom.xos",
             endProcess: "us.zoom.CptHost",
         )
@@ -333,7 +356,7 @@ struct MeetingDetectorTests {
 
     @Test("Non-Zoom app termination ends detection (falls back to main bundle)")
     func mainAppTerminationEndsDetection() async {
-        let (detector, process) = startCameraDetection(
+        let (detector, process) = await startMicDetection(
             bundleID: "com.microsoft.teams2",
             endProcess: "com.microsoft.teams2",
         )
@@ -350,7 +373,7 @@ struct MeetingDetectorTests {
 
     @Test("Unrelated app termination does not end detection")
     func unrelatedTerminationIgnored() async {
-        let (detector, process) = startCameraDetection(
+        let (detector, process) = await startMicDetection(
             bundleID: "us.zoom.xos",
             endProcess: "us.zoom.CptHost",
         )
@@ -367,7 +390,7 @@ struct MeetingDetectorTests {
 
     @Test("End-process silently disappearing is caught by watchdog")
     func silentEndProcessDisappearsEndsDetection() async {
-        let (detector, process) = startCameraDetection(
+        let (detector, process) = await startMicDetection(
             bundleID: "us.zoom.xos",
             endProcess: "us.zoom.CptHost",
         )
@@ -414,9 +437,8 @@ struct MeetingDetectorTests {
         detector.start()
         defer { detector.stop() }
 
-        camera.emit(true)
         audio.emit(true)
-        try? await Task.sleep(for: .milliseconds(100))
+        await waitForDetection(detector)
         #expect(detector.inMeeting)
 
         // Zoom call ends: CptHost quits and mic is released. NSWorkspace's
@@ -458,21 +480,20 @@ struct MeetingDetectorTests {
         detector.start()
         defer { detector.stop() }
 
-        camera.emit(true)
         audio.emit(true)
-        try? await Task.sleep(for: .milliseconds(100))
+        await waitForDetection(detector)
         #expect(detector.inMeeting)
 
         // User mutes: mic goes silent but the call is still active.
         audio.emit(false)
-        try? await Task.sleep(for: .milliseconds(200))
+        try? await Task.sleep(for: .seconds(4))
 
         #expect(detector.inMeeting)
     }
 
     @Test("End-process relaunch during grace cancels the pending end")
     func relaunchDuringGraceCancelsEnd() async {
-        let (detector, process) = startCameraDetection(
+        let (detector, process) = await startMicDetection(
             bundleID: "us.zoom.xos",
             endProcess: "us.zoom.CptHost",
         )

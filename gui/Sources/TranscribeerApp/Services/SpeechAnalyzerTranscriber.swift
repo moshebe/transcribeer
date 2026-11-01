@@ -117,14 +117,17 @@ enum SpeechAnalyzerTranscriber {
         case .unsupported:
             throw SpeechAnalyzerError.unsupportedLocale(locale.identifier)
         case .supported, .downloading:
-            guard let request = try await AssetInventory.assetInstallationRequest(
-                supporting: [probe],
-            ) else {
-                throw SpeechAnalyzerError.assetsUnavailable
-            }
-            logger.info("installing speech asset for \(locale.identifier, privacy: .public)")
-            try await request.downloadAndInstall()
+            break
+        @unknown default:
+            break
         }
+        guard let request = try await AssetInventory.assetInstallationRequest(
+            supporting: [probe],
+        ) else {
+            throw SpeechAnalyzerError.assetsUnavailable
+        }
+        logger.info("installing speech asset for \(locale.identifier, privacy: .public)")
+        try await request.downloadAndInstall()
     }
 
     // MARK: - Per-source transcription

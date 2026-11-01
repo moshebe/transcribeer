@@ -42,13 +42,10 @@ final class ResourceGovernor {
     private let powerSourceProvider: @Sendable () -> Bool
 
     // MARK: - Internal sensing handles
-    // Stored as nonisolated(unsafe) so deinit (which is nonisolated) can
-    // cancel/invalidate them without a concurrency error.
-
-    nonisolated(unsafe) private var thermalObserver: NSObjectProtocol?
-    nonisolated(unsafe) private var powerModeObserver: NSObjectProtocol?
-    nonisolated(unsafe) private var memoryPressureSource: DispatchSourceMemoryPressure?
-    nonisolated(unsafe) private var powerPollTimer: Timer?
+    private var thermalObserver: NSObjectProtocol?
+    private var powerModeObserver: NSObjectProtocol?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private var powerPollTimer: Timer?
 
     // MARK: - Init
 
@@ -83,7 +80,7 @@ final class ResourceGovernor {
         wirePowerPollTimer()
     }
 
-    deinit {
+    isolated deinit {
         if let thermalObserver {
             NotificationCenter.default.removeObserver(thermalObserver)
         }

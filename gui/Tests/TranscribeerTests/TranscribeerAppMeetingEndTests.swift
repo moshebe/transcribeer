@@ -29,15 +29,15 @@ struct TranscribeerAppMeetingChangeActionTests {
 
     // MARK: - Meeting end (inMeeting: false)
 
-    @Test("Meeting-end during auto-started recording triggers stopRecording")
-    func endDuringAutoStartedRecording() {
+    @Test("Meeting-end during auto-started recording selects stopRecording")
+    func endDuringAutoRecordingSelectsStop() {
         let action = TranscribeerApp.meetingChangeAction(
             inputs(inMeeting: false, isRecording: true, isBusy: true, autoStarted: true),
         )
         #expect(action == .stopRecording)
     }
 
-    @Test("Meeting-end during manually-started recording does NOT stop")
+    @Test("Meeting-end during manually-started recording selects no action")
     func endDuringManualRecordingIsNoop() {
         let action = TranscribeerApp.meetingChangeAction(
             inputs(inMeeting: false, isRecording: true, isBusy: true, autoStarted: false),
@@ -45,16 +45,16 @@ struct TranscribeerAppMeetingChangeActionTests {
         #expect(action == .noop)
     }
 
-    @Test("Meeting-end during countdown cancels the countdown")
-    func endDuringCountdownCancels() {
+    @Test("Meeting-end during countdown selects countdown cancellation")
+    func endDuringCountdownSelectsCancel() {
         let action = TranscribeerApp.meetingChangeAction(
             inputs(inMeeting: false, hasCountdown: true),
         )
         #expect(action == .cancelCountdown)
     }
 
-    @Test("Meeting-end during countdown AND auto-started recording cancels both")
-    func endCancelsCountdownAndStops() {
+    @Test("Meeting-end during countdown AND auto-started recording selects cancellation and stop actions")
+    func endSelectsCancelAndStop() {
         // Pathological but possible if a new detection kicked off a countdown while
         // a previous auto-recording was still in progress.
         let action = TranscribeerApp.meetingChangeAction(
@@ -77,21 +77,21 @@ struct TranscribeerAppMeetingChangeActionTests {
 
     // MARK: - Meeting start (inMeeting: true) — existing behaviour sanity checks
 
-    @Test("Meeting-start with auto-record enabled schedules auto-record")
-    func startSchedulesAutoRecord() {
+    @Test("Meeting-start with auto-record enabled selects the auto-record action")
+    func startSelectsAutoRecord() {
         let action = TranscribeerApp.meetingChangeAction(inputs(inMeeting: true))
         #expect(action == .scheduleAutoRecord)
     }
 
-    @Test("Meeting-start with auto-record disabled sends notification")
-    func startSendsNotification() {
+    @Test("Meeting-start with auto-record disabled selects the notification action")
+    func startSelectsNotification() {
         let action = TranscribeerApp.meetingChangeAction(
             inputs(inMeeting: true, autoRecordEnabled: false),
         )
         #expect(action == .sendMeetingNotification)
     }
 
-    @Test("Meeting-start while already recording is a noop (no duplicate prompts)")
+    @Test("Meeting-start while already recording selects no action")
     func startWhileRecordingIsNoop() {
         let action = TranscribeerApp.meetingChangeAction(
             inputs(
@@ -117,8 +117,8 @@ struct TranscribeerAppMeetingChangeActionTests {
         #expect(action == .noop)
     }
 
-    @Test("Cooldown also suppresses the manual meeting-started notification")
-    func startWithinCooldownSuppressesNotification() {
+    @Test("Cooldown selects no action for manual meeting notifications")
+    func cooldownSelectsNoNotification() {
         let action = TranscribeerApp.meetingChangeAction(
             inputs(
                 inMeeting: true,

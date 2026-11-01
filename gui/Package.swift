@@ -54,7 +54,10 @@ let package = Package(
 
         .testTarget(
             name: "TranscribeerCoreTests",
-            dependencies: ["TranscribeerCore"],
+            dependencies: [
+                "TranscribeerCore",
+                .product(name: "CaptureCore", package: "capture"),
+            ],
             path: "Tests/TranscribeerCoreTests",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

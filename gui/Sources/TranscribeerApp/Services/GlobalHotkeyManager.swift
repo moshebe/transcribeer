@@ -172,7 +172,7 @@ final class GlobalHotkeyManager {
         // Unregister any existing binding for this id first.
         unregister(id: id)
 
-        var hotKeyID = EventHotKeyID(signature: hotkeySignature, id: id)
+        let hotKeyID = EventHotKeyID(signature: hotkeySignature, id: id)
         var hotKeyRef: EventHotKeyRef?
 
         let status = RegisterEventHotKey(
