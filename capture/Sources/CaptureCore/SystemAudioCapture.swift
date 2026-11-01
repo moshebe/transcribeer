@@ -33,6 +33,23 @@ public final class SystemAudioCapture: @unchecked Sendable {
         qos: .userInteractive
     )
 
+    /// Serialises tap creation, route-change rebuilds and teardown.
+    private let controlQueue = DispatchQueue(label: "com.transcribeer.system-audio-control")
+    private var requestedOutputDeviceID: AudioDeviceID?
+    private var routeListeners: [AudioPropertyListener] = []
+    /// What the running tap was built for, to ignore notifications that
+    /// don't actually change the route.
+    private var activeRoute: (device: AudioDeviceID, sampleRate: Double)?
+    private var restartGeneration = 0
+
+    private static let restartDebounce: DispatchTimeInterval = .milliseconds(300)
+    private static let restartRetryDelay: DispatchTimeInterval = .seconds(1)
+    private static let maxRestartAttempts = 15
+
+    /// Called (on an internal queue) right before the tap is rebuilt after a
+    /// route change, so the writer can account for the gap.
+    public var onReconfigure: (@Sendable () -> Void)?
+
     public struct CaptureStreams {
         public let systemAudio: AsyncStream<AVAudioPCMBuffer>
     }
@@ -46,7 +63,25 @@ public final class SystemAudioCapture: @unchecked Sendable {
             self._sysContinuation.withLock { $0 = continuation }
         }
 
-        let outputUID = try resolveOutputUID(requested: outputDeviceID)
+        try controlQueue.sync {
+            requestedOutputDeviceID = outputDeviceID
+            do {
+                try startTap()
+            } catch {
+                _sysContinuation.withLock { $0?.finish(); $0 = nil }
+                throw error
+            }
+        }
+        return CaptureStreams(systemAudio: sysStream)
+    }
+
+    // MARK: - Tap lifecycle (controlQueue only)
+
+    /// Create the process tap + aggregate device on the current output device
+    /// and start the IO proc. Cleans up after itself on failure.
+    private func startTap() throws {
+        let outputDevice = try resolveOutputDevice(requested: requestedOutputDeviceID)
+        let outputUID = try Self.deviceUID(for: outputDevice)
         let tap = try createProcessTap(outputUID: outputUID)
         let tapID = tap.id
         let aggregateDeviceID: AudioObjectID
@@ -57,27 +92,17 @@ public final class SystemAudioCapture: @unchecked Sendable {
             )
         } catch {
             _ = AudioHardwareDestroyProcessTap(tapID)
-            _sysContinuation.withLock { $0?.finish(); $0 = nil }
             throw error
         }
 
         let format: AVAudioFormat
-        do {
-            format = try resolveTapFormat(tapID: tapID)
-        } catch {
-            _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            _ = AudioHardwareDestroyProcessTap(tapID)
-            _sysContinuation.withLock { $0?.finish(); $0 = nil }
-            throw error
-        }
-
         let ioProcID: AudioDeviceIOProcID
         do {
+            format = try resolveTapFormat(tapID: tapID)
             ioProcID = try registerIOProc(aggregateDeviceID: aggregateDeviceID, format: format)
         } catch {
             _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
             _ = AudioHardwareDestroyProcessTap(tapID)
-            _sysContinuation.withLock { $0?.finish(); $0 = nil }
             throw error
         }
 
@@ -86,29 +111,31 @@ public final class SystemAudioCapture: @unchecked Sendable {
             _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
             _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
             _ = AudioHardwareDestroyProcessTap(tapID)
-            _sysContinuation.withLock { $0?.finish(); $0 = nil }
             throw CaptureError.startFailed(startStatus)
         }
 
         _tapID.withLock { $0 = tapID }
         _aggregateDeviceID.withLock { $0 = aggregateDeviceID }
         _ioProcID.withLock { $0 = ioProcID }
-
-        return CaptureStreams(systemAudio: sysStream)
+        activeRoute = (outputDevice, format.sampleRate)
+        logger.info(
+            """
+            tap started device=\(outputDevice, privacy: .public) \
+            sr=\(format.sampleRate, privacy: .public)
+            """
+        )
+        watchRoute(outputDevice: outputDevice, tapID: tapID)
     }
 
     // MARK: - bufferStream helpers (split for function_body_length)
 
-    /// Resolve the output device UID string, preferring the requested device
-    /// and falling back to the system default.
-    private func resolveOutputUID(requested: AudioDeviceID?) throws -> String {
-        let resolvedDeviceID: AudioDeviceID
+    /// Resolve the output device, preferring the requested one and falling
+    /// back to the system default when it is gone.
+    private func resolveOutputDevice(requested: AudioDeviceID?) throws -> AudioDeviceID {
         if let requested, (try? Self.deviceUID(for: requested)) != nil {
-            resolvedDeviceID = requested
-        } else {
-            resolvedDeviceID = try Self.defaultOutputDeviceID()
+            return requested
         }
-        return try Self.deviceUID(for: resolvedDeviceID)
+        return try Self.defaultOutputDeviceID()
     }
 
     private func createProcessTap(outputUID: String) throws -> (id: AudioObjectID, uuid: UUID) {
@@ -131,7 +158,6 @@ public final class SystemAudioCapture: @unchecked Sendable {
         var tapID = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         guard status == noErr else {
-            _sysContinuation.withLock { $0?.finish(); $0 = nil }
             throw CaptureError.tapCreationFailed(status)
         }
         return (tapID, tapUUID)
@@ -207,7 +233,16 @@ public final class SystemAudioCapture: @unchecked Sendable {
     public func stop() async {
         finishStream()
         _audioLevel.value = 0
+        controlQueue.sync {
+            restartGeneration += 1
+            routeListeners.forEach { $0.invalidate() }
+            routeListeners = []
+            teardownTap()
+        }
+    }
 
+    private func teardownTap() {
+        activeRoute = nil
         let aggregateDeviceID = _aggregateDeviceID.withLock { state -> AudioObjectID in
             let current = state
             state = AudioObjectID(kAudioObjectUnknown)
@@ -429,5 +464,81 @@ public final class SystemAudioCapture: @unchecked Sendable {
                 "Unable to start system audio capture (OSStatus \(status))."
             }
         }
+    }
+}
+
+// MARK: - Route changes
+
+extension SystemAudioCapture {
+    /// The tap is bound to one output device, so a route change (AirPods
+    /// connecting, the hands-free profile changing the sample rate, the device
+    /// disappearing) would otherwise leave us recording silence or audio with
+    /// the wrong rate. Any of these rebuilds the tap.
+    private func watchRoute(outputDevice: AudioDeviceID, tapID: AudioObjectID) {
+        routeListeners.forEach { $0.invalidate() }
+        var listeners: [AudioPropertyListener?] = [
+            AudioPropertyListener(
+                objectID: tapID, selector: kAudioTapPropertyFormat, queue: controlQueue
+            ) { [weak self] in self?.scheduleRestart(reason: "tap format changed") },
+            AudioPropertyListener(
+                objectID: outputDevice, selector: kAudioDevicePropertyDeviceIsAlive, queue: controlQueue
+            ) { [weak self] in self?.scheduleRestart(reason: "output device gone") },
+        ]
+        if requestedOutputDeviceID == nil {
+            listeners.append(AudioPropertyListener(
+                objectID: AudioObjectID(kAudioObjectSystemObject),
+                selector: kAudioHardwarePropertyDefaultOutputDevice,
+                queue: controlQueue
+            ) { [weak self] in self?.scheduleRestart(reason: "default output changed") })
+        }
+        routeListeners = listeners.compactMap(\.self)
+    }
+
+    /// Coalesce bursts of route notifications into one rebuild.
+    private func scheduleRestart(reason: String) {
+        controlQueue.async { [self] in
+            restartGeneration += 1
+            let generation = restartGeneration
+            controlQueue.asyncAfter(deadline: .now() + Self.restartDebounce) { [self] in
+                guard generation == restartGeneration else { return }
+                restart(reason: reason, attempt: 1)
+            }
+        }
+    }
+
+    private func restart(reason: String, attempt: Int) {
+        guard _sysContinuation.withLock({ $0 != nil }) else { return }
+        if attempt == 1, routeIsUnchanged() {
+            logger.debug("tap restart skipped, route unchanged reason=\(reason, privacy: .public)")
+            return
+        }
+        logger.info("tap restart reason=\(reason, privacy: .public) attempt=\(attempt, privacy: .public)")
+        teardownTap()
+        onReconfigure?()
+        do {
+            try startTap()
+        } catch {
+            guard attempt < Self.maxRestartAttempts else {
+                logger.error("tap restart gave up: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            let generation = restartGeneration
+            controlQueue.asyncAfter(deadline: .now() + Self.restartRetryDelay) { [self] in
+                guard generation == restartGeneration else { return }
+                restart(reason: reason, attempt: attempt + 1)
+            }
+        }
+    }
+
+    private func routeIsUnchanged() -> Bool {
+        guard let activeRoute,
+              let device = try? resolveOutputDevice(requested: requestedOutputDeviceID),
+              device == activeRoute.device
+        else { return false }
+        let tapID = _tapID.withLock { $0 }
+        guard tapID != AudioObjectID(kAudioObjectUnknown),
+              let format = try? Self.tapStreamDescription(for: tapID)
+        else { return false }
+        return format.mSampleRate == activeRoute.sampleRate
     }
 }

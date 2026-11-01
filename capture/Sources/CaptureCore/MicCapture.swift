@@ -65,6 +65,26 @@ public final class MicCapture: @unchecked Sendable {
     >(uncheckedState: nil)
     private let _muted = SyncBool()
 
+    /// Serialises every engine mutation: start, route-change rebuilds and stop.
+    private let engineQueue = DispatchQueue(label: "com.transcribeer.mic-engine")
+    private var requestedDeviceID: AudioDeviceID?
+    private var echoCancellation = false
+    private var configObserver: NSObjectProtocol?
+    private var defaultInputListener: AudioPropertyListener?
+    private var restartGeneration = 0
+    /// What the running engine was built for, to ignore notifications that
+    /// don't actually change the route.
+    private var activeRoute: (device: AudioDeviceID?, sampleRate: Double)?
+
+    private static let restartDebounce: DispatchTimeInterval = .milliseconds(300)
+    private static let restartRetryDelay: DispatchTimeInterval = .seconds(1)
+    /// ~15 s of retries — macOS 27 takes ~6 s to bring AirPods' mic up.
+    private static let maxRestartAttempts = 15
+
+    /// Called (on an internal queue) right before the engine is rebuilt after
+    /// a route change, so the writer can account for the gap.
+    public var onReconfigure: (@Sendable () -> Void)?
+
     public var audioLevel: Float { _muted.value ? 0 : _audioLevel.value }
     public var hasCapturedFrames: Bool { _hasCapturedFrames.value }
     public var captureError: String? { _error.value }
@@ -81,8 +101,7 @@ public final class MicCapture: @unchecked Sendable {
         echoCancellation: Bool = false
     ) -> AsyncStream<AVAudioPCMBuffer> {
         _streamContinuation.withLock { $0?.finish(); $0 = nil }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        engineQueue.sync { teardownEngine() }
 
         let errorHolder = _error
 
@@ -90,52 +109,173 @@ public final class MicCapture: @unchecked Sendable {
             self._streamContinuation.withLock { $0 = continuation }
             errorHolder.value = nil
             self._hasCapturedFrames.value = false
+            continuation.onTermination = { _ in logger.info("Stream terminated") }
 
             logger.info("bufferStream deviceID=\(String(describing: deviceID), privacy: .public)")
 
-            let engine = self.makeFreshEngine()
-            let inputNode = engine.inputNode
-            Self.applyVoiceProcessing(inputNode, enabled: echoCancellation)
-
-            guard Self.applyInputDevice(
-                inputNode: inputNode,
-                deviceID: deviceID,
-                errorHolder: errorHolder,
-                continuation: continuation
-            ) else { return }
-
-            // Use the node's actual output format as the tap format.
-            // Synthesising a different format (e.g. forcing a hardware nominal
-            // sample rate) causes AVFoundation to throw an uncatchable
-            // NSException ("Failed to create tap due to format mismatch") when
-            // the engine is in a VPIO or Bluetooth SCO context that reports a
-            // non-standard rate such as 24 000 Hz.  Passing the node's own
-            // format is always safe; downstream writers derive the CAF format
-            // from the incoming buffer, so any valid rate is handled correctly.
-            let tapFormat = inputNode.outputFormat(forBus: 0)
-            logger.info(
-                "tapFormat: sr=\(tapFormat.sampleRate, privacy: .public) ch=\(tapFormat.channelCount, privacy: .public)"
-            )
-
-            guard Self.validateTapFormat(tapFormat, errorHolder: errorHolder, continuation: continuation) else {
-                return
-            }
-
-            self.installTap(inputNode: inputNode, tapFormat: tapFormat, continuation: continuation)
-
-            continuation.onTermination = { _ in logger.info("Stream terminated") }
-
-            do {
-                try engine.start()
-                logger.info("Engine started, isRunning=\(engine.isRunning, privacy: .public)")
-            } catch {
-                let msg = "Mic failed: \(error.localizedDescription)"
-                logger.error("\(msg, privacy: .public)")
-                errorHolder.value = msg
-                self.hasTapInstalled = false
-                continuation.finish()
+            self.engineQueue.sync {
+                self.requestedDeviceID = deviceID
+                self.echoCancellation = echoCancellation
+                if let error = self.startEngine(continuation: continuation) {
+                    errorHolder.value = error
+                    continuation.finish()
+                    return
+                }
+                self.watchDefaultInput()
             }
         }
+    }
+
+    // MARK: - Engine lifecycle (engineQueue only)
+
+    /// Build a fresh engine bound to the requested device, install the tap and
+    /// start it. Returns a user-facing error message on failure.
+    private func startEngine(continuation: AsyncStream<AVAudioPCMBuffer>.Continuation) -> String? {
+        let engine = makeFreshEngine()
+        let inputNode = engine.inputNode
+        Self.applyVoiceProcessing(inputNode, enabled: echoCancellation)
+
+        if let error = Self.applyInputDevice(inputNode: inputNode, deviceID: requestedDeviceID) {
+            return error
+        }
+
+        // Use the node's actual output format as the tap format.
+        // Synthesising a different format (e.g. forcing a hardware nominal
+        // sample rate) causes AVFoundation to throw an uncatchable
+        // NSException ("Failed to create tap due to format mismatch") when
+        // the engine is in a VPIO or Bluetooth SCO context that reports a
+        // non-standard rate such as 24 000 Hz.  Passing the node's own
+        // format is always safe; `SourceTrackWriter` converts any rate to the
+        // recording's file format.
+        let tapFormat = inputNode.outputFormat(forBus: 0)
+        logger.info(
+            "tapFormat: sr=\(tapFormat.sampleRate, privacy: .public) ch=\(tapFormat.channelCount, privacy: .public)"
+        )
+        if let error = Self.validateTapFormat(tapFormat) {
+            return error
+        }
+
+        installTap(inputNode: inputNode, tapFormat: tapFormat, continuation: continuation)
+
+        do {
+            try engine.start()
+            logger.info("Engine started, isRunning=\(engine.isRunning, privacy: .public)")
+        } catch {
+            let msg = "Mic failed: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            teardownEngine()
+            return msg
+        }
+
+        activeRoute = (Self.currentDevice(of: inputNode), tapFormat.sampleRate)
+        observeConfigurationChanges(of: engine)
+        return nil
+    }
+
+    /// AVAudioEngine stops itself when the input device's format or route
+    /// changes (AirPods connecting, the hands-free profile kicking in). Rebuild
+    /// it so the recording keeps going instead of silently losing the mic.
+    private func observeConfigurationChanges(of engine: AVAudioEngine) {
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.scheduleRestart(reason: "engine configuration change")
+        }
+    }
+
+    /// With no pinned device the mic follows the system default input.
+    private func watchDefaultInput() {
+        defaultInputListener?.invalidate()
+        defaultInputListener = nil
+        guard requestedDeviceID == nil else { return }
+        defaultInputListener = AudioPropertyListener(
+            objectID: AudioObjectID(kAudioObjectSystemObject),
+            selector: kAudioHardwarePropertyDefaultInputDevice,
+            queue: engineQueue
+        ) { [weak self] in
+            self?.scheduleRestart(reason: "default input changed")
+        }
+    }
+
+    /// Coalesce bursts of route notifications into one rebuild.
+    private func scheduleRestart(reason: String) {
+        engineQueue.async { [self] in
+            restartGeneration += 1
+            let generation = restartGeneration
+            engineQueue.asyncAfter(deadline: .now() + Self.restartDebounce) { [self] in
+                guard generation == restartGeneration else { return }
+                restart(reason: reason, attempt: 1)
+            }
+        }
+    }
+
+    private func restart(reason: String, attempt: Int) {
+        guard let continuation = _streamContinuation.withLock({ $0 }) else { return }
+        if attempt == 1, engine.isRunning, routeIsUnchanged() {
+            logger.debug("mic restart skipped, route unchanged reason=\(reason, privacy: .public)")
+            return
+        }
+        logger.info("mic restart reason=\(reason, privacy: .public) attempt=\(attempt, privacy: .public)")
+
+        if let pinned = requestedDeviceID,
+           !AudioDevices.availableInputDevices().contains(where: { $0.id == pinned }) {
+            logger.warning("pinned input device \(pinned, privacy: .public) is gone; using system default")
+            requestedDeviceID = nil
+            watchDefaultInput()
+        }
+
+        onReconfigure?()
+        guard let error = startEngine(continuation: continuation) else { return }
+
+        // Bluetooth headsets can take several seconds to come up; keep trying
+        // rather than ending the recording.
+        guard attempt < Self.maxRestartAttempts else {
+            logger.error("mic restart gave up: \(error, privacy: .public)")
+            _error.value = error
+            return
+        }
+        let generation = restartGeneration
+        engineQueue.asyncAfter(deadline: .now() + Self.restartRetryDelay) { [self] in
+            guard generation == restartGeneration else { return }
+            restart(reason: reason, attempt: attempt + 1)
+        }
+    }
+
+    private func routeIsUnchanged() -> Bool {
+        guard let activeRoute else { return false }
+        let inputNode = engine.inputNode
+        return Self.currentDevice(of: inputNode) == activeRoute.device
+            && inputNode.outputFormat(forBus: 0).sampleRate == activeRoute.sampleRate
+    }
+
+    private static func currentDevice(of inputNode: AVAudioInputNode) -> AudioDeviceID? {
+        guard let audioUnit = inputNode.audioUnit else { return nil }
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioUnitGetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            &size
+        )
+        return status == noErr ? deviceID : nil
+    }
+
+    private func teardownEngine() {
+        activeRoute = nil
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+            self.configObserver = nil
+        }
+        if hasTapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            hasTapInstalled = false
+        }
+        engine.stop()
     }
 
     // MARK: - bufferStream helpers (split for function_body_length)
@@ -151,24 +291,19 @@ public final class MicCapture: @unchecked Sendable {
     }
 
     /// Bind the input node to a specific AudioDeviceID or fall back to system
-    /// default. Returns `false` and finishes the continuation on failure.
-    @discardableResult
+    /// default. Returns a user-facing error message on failure.
     private static func applyInputDevice(
         inputNode: AVAudioInputNode,
-        deviceID: AudioDeviceID?,
-        errorHolder: SyncString,
-        continuation: AsyncStream<AVAudioPCMBuffer>.Continuation
-    ) -> Bool {
+        deviceID: AudioDeviceID?
+    ) -> String? {
         guard let id = deviceID else {
             logger.info("No deviceID, using system default")
-            return true
+            return nil
         }
         guard let inAU = inputNode.audioUnit else {
             let msg = "inputNode has no audio unit after prepare"
             logger.error("\(msg, privacy: .public)")
-            errorHolder.value = msg
-            continuation.finish()
-            return false
+            return msg
         }
         var devID = id
         let status = AudioUnitSetProperty(
@@ -180,34 +315,28 @@ public final class MicCapture: @unchecked Sendable {
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
         logger.info("setInputDevice status=\(status, privacy: .public) (0=ok)")
-        return true
+        return nil
     }
 
     /// Validate that `format` is usable as a tap format.
     ///
-    /// Returns `false` and surfaces a user-facing error via `errorHolder` +
-    /// `continuation.finish()` when the format is degenerate (zero sample rate
-    /// or zero channels).  This converts a would-be crash (AVFoundation throws
-    /// an uncatchable `NSException` for invalid formats) into a recoverable,
-    /// surfaced error.
+    /// Returns a user-facing error message when the format is degenerate (zero
+    /// sample rate or zero channels), so the caller can finish the stream
+    /// instead of installing the tap. This converts a would-be crash
+    /// (AVFoundation throws an uncatchable `NSException` for invalid formats)
+    /// into a recoverable, surfaced error.
     ///
     /// - Note: Exposed as `internal` (not `private`) so it can be covered by
     ///   unit tests without `@testable` import overhead.
-    static func validateTapFormat(
-        _ format: AVAudioFormat,
-        errorHolder: SyncString,
-        continuation: AsyncStream<AVAudioPCMBuffer>.Continuation
-    ) -> Bool {
+    static func validateTapFormat(_ format: AVAudioFormat) -> String? {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             let msg = "Cannot install mic tap: invalid audio format "
                 + "(sr=\(format.sampleRate) ch=\(format.channelCount)). "
                 + "Try selecting a different input device in Audio Settings."
             logger.error("\(msg, privacy: .public)")
-            errorHolder.value = msg
-            continuation.finish()
-            return false
+            return msg
         }
-        return true
+        return nil
     }
 
     private func installTap(
@@ -243,22 +372,19 @@ public final class MicCapture: @unchecked Sendable {
 
     public func stop() {
         finishStream()
-        if hasTapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            hasTapInstalled = false
+        engineQueue.sync {
+            restartGeneration += 1
+            defaultInputListener?.invalidate()
+            defaultInputListener = nil
+            teardownEngine()
+            engine.reset()
         }
-        engine.stop()
-        engine.reset()
         _audioLevel.value = 0
         _hasCapturedFrames.value = false
     }
 
     private func makeFreshEngine() -> AVAudioEngine {
-        if hasTapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            hasTapInstalled = false
-        }
-        engine.stop()
+        teardownEngine()
         let freshEngine = AVAudioEngine()
         engine = freshEngine
         return freshEngine

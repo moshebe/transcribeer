@@ -142,13 +142,31 @@ struct DualAudioRecorderTests {
 
         let recorder = DualAudioRecorder(sessionDir: dir)
         let samples = (0..<48000).map { Float(sin(Double($0) * 0.01)) * 0.5 }
-        try recorder.writeSys(pcmBuffer(samples: samples, sampleRate: 48000))
+        let start = Date()
+        // Two 1 s buffers arriving 2 s apart: the device delivered 96 000
+        // frames over 2 s of wall clock, i.e. 48 kHz.
+        try recorder.writeSys(pcmBuffer(samples: samples, sampleRate: 48000), at: start)
+        try recorder.writeSys(pcmBuffer(samples: samples, sampleRate: 48000), at: start.addingTimeInterval(2))
 
-        // Small delay to create a non-zero duration
-        try await Task.sleep(nanoseconds: 100_000_000)
         let timing = await recorder.stop()
 
-        #expect(timing.sysEffectiveSampleRate > 0)
+        #expect(timing.sysEffectiveSampleRate == 48000)
         #expect(timing.sysDeclaredSampleRate == 48000)
+    }
+
+    @Test("Effective sample rate is left unset for sub-second recordings")
+    func effectiveSampleRateTooShort() async throws {
+        let dir = makeSessionDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let recorder = DualAudioRecorder(sessionDir: dir)
+        try recorder.writeSys(pcmBuffer(samples: [0.1, 0.2, 0.3]))
+
+        let timing = await recorder.stop()
+
+        // A single buffer has zero duration; dividing by it produced `inf`,
+        // which `timing.json` cannot encode.
+        #expect(timing.sysEffectiveSampleRate == 0)
     }
 }

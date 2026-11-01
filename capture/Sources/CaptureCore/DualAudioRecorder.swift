@@ -14,16 +14,11 @@ public final class DualAudioRecorder: @unchecked Sendable {
     private let micCapture = MicCapture()
     private let sysCapture = SystemAudioCapture()
 
-    private let stateLock = OSAllocatedUnfairLock<State>(uncheckedState: State())
+    private let stateLock: OSAllocatedUnfairLock<State>
 
     private struct State {
-        var micFile: AVAudioFile?
-        var sysFile: AVAudioFile?
-        var micAnchor: Date?
-        var sysAnchor: Date?
-        var sysEndFrame: Int64 = 0
-        var sysEndDate: Date?
-        var sysDeclaredRate: Double = 0
+        var mic: SourceTrackWriter
+        var sys: SourceTrackWriter
     }
 
     private var micTask: Task<Void, Never>?
@@ -36,6 +31,10 @@ public final class DualAudioRecorder: @unchecked Sendable {
 
     public init(sessionDir: URL) {
         self.sessionDir = sessionDir
+        stateLock = OSAllocatedUnfairLock(uncheckedState: State(
+            mic: SourceTrackWriter(url: sessionDir.appendingPathComponent("audio.mic.caf")),
+            sys: SourceTrackWriter(url: sessionDir.appendingPathComponent("audio.sys.caf"))
+        ))
     }
 
     // MARK: - Public API
@@ -52,6 +51,14 @@ public final class DualAudioRecorder: @unchecked Sendable {
     /// (e.g. format mismatch due to a VPIO/Bluetooth SCO context).  The error
     /// message is user-facing and safe to display directly in an alert.
     public func start() async throws {
+        // A rebuilt capture (audio route change) leaves a hole in its stream;
+        // the writer fills it with silence so mic and system audio stay aligned.
+        micCapture.onReconfigure = { [weak self] in
+            self?.stateLock.withLock { $0.mic.markDiscontinuity() }
+        }
+        sysCapture.onReconfigure = { [weak self] in
+            self?.stateLock.withLock { $0.sys.markDiscontinuity() }
+        }
         let sysStreams = try await sysCapture.bufferStream(outputDeviceID: outputDeviceID)
         let micStream = micCapture.bufferStream(
             deviceID: inputDeviceID,
@@ -92,22 +99,21 @@ public final class DualAudioRecorder: @unchecked Sendable {
         await sysCapture.stop()
 
         return stateLock.withLock { state in
-            state.micFile = nil
-            state.sysFile = nil
+            state.mic.close()
+            state.sys.close()
 
             var meta = TimingMetadata()
-            if let anchor = state.micAnchor {
-                meta.micStartEpoch = anchor.timeIntervalSince1970
-            }
-            if let anchor = state.sysAnchor {
-                meta.sysStartEpoch = anchor.timeIntervalSince1970
-            }
-            meta.sysDeclaredSampleRate = state.sysDeclaredRate
-            if let endDate = state.sysEndDate,
-               let anchor = state.sysAnchor,
-               state.sysEndFrame > 0 {
+            meta.micStartEpoch = state.mic.anchor?.timeIntervalSince1970
+            meta.sysStartEpoch = state.sys.anchor?.timeIntervalSince1970
+            meta.sysDeclaredSampleRate = state.sys.fileSampleRate
+            // Under a second of wall clock is too short to measure a rate;
+            // 0 tells `AudioMixer` to trust the declared one.
+            if let endDate = state.sys.lastWriteDate,
+               let anchor = state.sys.anchor,
+               state.sys.framesWritten > 0,
+               endDate.timeIntervalSince(anchor) >= 1 {
                 meta.sysEffectiveSampleRate =
-                    Double(state.sysEndFrame) / endDate.timeIntervalSince(anchor)
+                    Double(state.sys.framesWritten) / endDate.timeIntervalSince(anchor)
             }
             return meta
         }
@@ -120,115 +126,23 @@ public final class DualAudioRecorder: @unchecked Sendable {
     /// needing Core Audio hardware; normal capture uses the async stream
     /// path started by `start()`.
     @_spi(Testing)
-    public func writeMic(_ buffer: AVAudioPCMBuffer) {
-        let mono = buffer.format.channelCount > 1
-            ? (downmixToMono(buffer) ?? buffer)
-            : buffer
-
-        stateLock.withLock { state in
-            if state.micAnchor == nil {
-                state.micAnchor = Date()
-                openMicFile(format: mono.format, state: &state)
-            }
-
-            guard let file = state.micFile else { return }
-
-            do {
-                try file.write(from: mono)
-            } catch {
-                logger.error("mic write failed: \(error.localizedDescription)")
-            }
-        }
+    public func writeMic(_ buffer: AVAudioPCMBuffer, at date: Date = Date()) {
+        stateLock.withLock { $0.mic.write(buffer, at: date) }
     }
 
     /// Append a sys PCM buffer. See `writeMic` for the SPI rationale.
     @_spi(Testing)
-    public func writeSys(_ buffer: AVAudioPCMBuffer) {
+    public func writeSys(_ buffer: AVAudioPCMBuffer, at date: Date = Date()) {
+        stateLock.withLock { $0.sys.write(buffer, at: date) }
+    }
+
+    /// Simulate a capture rebuild for tests (normally driven by
+    /// `onReconfigure` from the captures).
+    @_spi(Testing)
+    public func markDiscontinuity(mic: Bool, sys: Bool) {
         stateLock.withLock { state in
-            if state.sysAnchor == nil {
-                state.sysAnchor = Date()
-                state.sysDeclaredRate = buffer.format.sampleRate
-                openSysFile(format: buffer.format, state: &state)
-            }
-
-            guard let file = state.sysFile else { return }
-
-            state.sysEndFrame += Int64(buffer.frameLength)
-            state.sysEndDate = Date()
-
-            do {
-                try file.write(from: buffer)
-            } catch {
-                logger.error("sys write failed: \(error.localizedDescription)")
-            }
+            if mic { state.mic.markDiscontinuity() }
+            if sys { state.sys.markDiscontinuity() }
         }
-    }
-
-    // MARK: - Private helpers
-
-    private func openMicFile(format: AVAudioFormat, state: inout State) {
-        let url = sessionDir.appendingPathComponent("audio.mic.caf")
-        do {
-            state.micFile = try AVAudioFile(
-                forWriting: url,
-                settings: cafSettings(from: format),
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-        } catch {
-            logger.error("Failed to open mic CAF: \(error.localizedDescription)")
-        }
-    }
-
-    private func openSysFile(format: AVAudioFormat, state: inout State) {
-        let url = sessionDir.appendingPathComponent("audio.sys.caf")
-        do {
-            state.sysFile = try AVAudioFile(
-                forWriting: url,
-                settings: cafSettings(from: format),
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-        } catch {
-            logger.error("Failed to open sys CAF: \(error.localizedDescription)")
-        }
-    }
-
-    private func cafSettings(from format: AVAudioFormat) -> [String: Any] {
-        [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: format.channelCount,
-        ]
-    }
-
-    private func downmixToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let monoFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: buffer.format.sampleRate,
-            channels: 1,
-            interleaved: false
-        ),
-              let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: buffer.frameLength),
-              let srcData = buffer.floatChannelData,
-              let dstData = mono.floatChannelData
-        else {
-            return nil
-        }
-        mono.frameLength = buffer.frameLength
-
-        let chCount = Int(buffer.format.channelCount)
-        let frames = Int(buffer.frameLength)
-        let dst = dstData[0]
-
-        for frame in 0..<frames {
-            var sum: Float = 0
-            for ch in 0..<chCount {
-                sum += srcData[ch][frame]
-            }
-            dst[frame] = sum / Float(chCount)
-        }
-
-        return mono
     }
 }
