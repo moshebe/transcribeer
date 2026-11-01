@@ -35,6 +35,9 @@ extension PipelineRunner {
             processingItemTask = task
             await task.value
             processingItemTask = nil
+            // A cancelled summary is swallowed as non-fatal, so nothing else
+            // clears the flag before the next session starts.
+            isCancelling = false
         }
         queueWorker = nil
     }
@@ -46,11 +49,16 @@ extension PipelineRunner {
         state = newState
     }
 
+    /// True while the queue or a history re-run is transcribing / summarizing.
+    var isProcessingActive: Bool {
+        queueWorker != nil || transcribingSession != nil || summarizingSession != nil
+    }
+
     /// Suspend until no recording is in progress, when `condition` holds.
     /// Cancellation ends the wait early; the caller's next step observes it.
-    func waitForRecordingToEnd(if condition: Bool, logger sessionLogger: SessionLogger) async {
+    func waitForRecordingToEnd(if condition: Bool, logger sessionLogger: SessionLogger? = nil) async {
         guard condition, state.isRecording else { return }
-        sessionLogger.log("waiting for the current recording to end before on-device processing")
+        sessionLogger?.log("waiting for the current recording to end before on-device processing")
         while state.isRecording, !Task.isCancelled {
             try? await Task.sleep(for: Self.recordingPollInterval)
         }

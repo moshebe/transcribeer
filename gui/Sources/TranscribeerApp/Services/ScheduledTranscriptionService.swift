@@ -85,6 +85,8 @@ final class ScheduledTranscriptionService {
         var processed = 0
         for session in pending {
             if Task.isCancelled { break }
+            // A meeting may start mid-batch; leave the Mac to it.
+            await runner.waitForRecordingToEnd(if: true)
             await processSession(session, runner: runner, config: config)
             processed += 1
         }
