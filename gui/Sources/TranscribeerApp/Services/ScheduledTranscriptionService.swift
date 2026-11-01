@@ -71,7 +71,7 @@ final class ScheduledTranscriptionService {
 
     private func runBatch(referenceDate: Date, config: AppConfig) async {
         guard let runner else { return }
-        if runner.state.isBusy {
+        if runner.state.isBusy || runner.queueWorker != nil {
             logger.info("scheduler skipped — runner busy at fire time")
             lastRunDate = Calendar.current.startOfDay(for: referenceDate)
             lastRunSessionCount = 0
