@@ -541,7 +541,9 @@ enum TranscriptionError: LocalizedError {
     /// WhisperKit could not find a matching CoreML folder for `model` inside `repo`.
     case modelNotFound(model: String, repo: String, detail: String)
     case missingAPIKey(backend: String, envVar: String)
-    case httpError(backend: String, status: Int, body: String)
+    /// `retryAfter` carries the parsed `Retry-After` header (seconds), if any,
+    /// so `CloudRetryPolicy` can honour server-requested backoff.
+    case httpError(backend: String, status: Int, body: String, retryAfter: TimeInterval? = nil)
     case invalidResponse(backend: String, detail: String)
     case network(backend: String, detail: String)
 
@@ -559,7 +561,7 @@ enum TranscriptionError: LocalizedError {
         case let .missingAPIKey(backend, envVar):
             let envHint = envVar.isEmpty ? "" : " or set $\(envVar)"
             return "\(backend) API key missing — add it in Settings → Transcription\(envHint)."
-        case let .httpError(backend, status, body):
+        case let .httpError(backend, status, body, _):
             return "\(backend) transcription failed (HTTP \(status)): \(body)"
         case let .invalidResponse(backend, detail):
             return "\(backend) returned an unexpected response: \(detail)"

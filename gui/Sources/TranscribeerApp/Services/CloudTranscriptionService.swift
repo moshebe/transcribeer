@@ -29,6 +29,11 @@ enum CloudTranscriptionService {
     /// while still parallelising a multi-chunk recording.
     private static let maxConcurrency = 3
 
+    /// Per-chunk retry policy for transient network / 429 / 5xx failures.
+    /// Retrying at chunk level keeps one blip from failing the whole
+    /// recording (the throwing task group would cancel sibling chunks).
+    private static let retryPolicy = CloudRetryPolicy()
+
     /// Chunk length (seconds). Matches `ChunkedTranscriber`. Combined with
     /// `uploadSampleRate` (16 kHz) and `uploadFormat` (AAC-LC @ 48 kbps),
     /// a 10-min chunk is ~3.6 MB on the wire — well under OpenAI's 25 MB
@@ -206,12 +211,17 @@ enum CloudTranscriptionService {
         tracker.markStarted(index)
         let segs: [CoreSegment]
         do {
-            segs = try await transcribeChunk(
-                backend: ctx.backend,
-                chunkURL: chunk.url,
-                model: ctx.model,
-                language: ctx.language,
-                apiKey: ctx.apiKey
+            segs = try await retryPolicy.run(
+                onRetry: { $0.log(chunk: index, backend: ctx.backend) },
+                operation: {
+                    try await transcribeChunk(
+                        backend: ctx.backend,
+                        chunkURL: chunk.url,
+                        model: ctx.model,
+                        language: ctx.language,
+                        apiKey: ctx.apiKey
+                    )
+                }
             )
         } catch {
             logger.error(
@@ -758,7 +768,10 @@ private enum TranscriptionHTTP {
         throw TranscriptionError.httpError(
             backend: backend,
             status: http.statusCode,
-            body: trimmed
+            body: trimmed,
+            retryAfter: CloudRetryPolicy.parseRetryAfter(
+                http.value(forHTTPHeaderField: "Retry-After")
+            )
         )
     }
 }
