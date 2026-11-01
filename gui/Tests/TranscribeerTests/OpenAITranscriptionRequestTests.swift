@@ -55,6 +55,30 @@ struct OpenAITranscriptionRequestTests {
         buffer.frameLength = 32_000
         try file.write(from: buffer)
     }
+
+    @Test("Response timing does not require reopening the uploaded audio", arguments: [
+        (#"{"text":"Meeting","duration":12}"#, 12.0),
+        (#"{"segments":[{"text":"Meeting","start":2,"end":7}]}"#, 7.0),
+        (#"{"text":""}"#, nil),
+    ])
+    func responseTiming(response: String, expectedEnd: Double?) async throws {
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        try writeAudio(to: audioURL)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TranscriptionRequestProtocol.self]
+        configuration.httpAdditionalHeaders = ["X-Response": response, "X-Remove-Audio": audioURL.path]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let segments = try await OpenAITranscription.call(
+            audioURL: audioURL, model: "gpt-transcribe", language: nil, apiKey: "test-key", session: session
+        )
+        #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+        #expect(segments.last?.end == expectedEnd)
+        #expect(segments.count == (expectedEnd == nil ? 0 : 1))
+    }
 }
 
 private final class TranscriptionRequestProtocol: URLProtocol, @unchecked Sendable {
@@ -78,14 +102,25 @@ private final class TranscriptionRequestProtocol: URLProtocol, @unchecked Sendab
             recorded.httpBody = body
         }
         let snapshot = recorded
-        Self.captured.withLock { $0 = snapshot }
+        if request.value(forHTTPHeaderField: "X-Response") == nil {
+            Self.captured.withLock { $0 = snapshot }
+        }
         guard let url = request.url,
               let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil) else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }
+        if let path = request.value(forHTTPHeaderField: "X-Remove-Audio") {
+            do {
+                try FileManager.default.removeItem(atPath: path)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+                return
+            }
+        }
+        let json = request.value(forHTTPHeaderField: "X-Response") ?? #"{"text":"A short meeting."}"#
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(#"{"text":"A short meeting."}"#.utf8))
+        client?.urlProtocol(self, didLoad: Data(json.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

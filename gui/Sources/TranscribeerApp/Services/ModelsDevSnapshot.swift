@@ -25,6 +25,8 @@ struct ModelsDevSnapshot: Sendable {
             default: break
             }
         }
+        summaryModels = summaryModels.filter { !$0.value.isEmpty }
+        if geminiTranscriptionModels?.isEmpty == true { geminiTranscriptionModels = nil }
         guard !summaryModels.isEmpty else { throw CatalogError.invalidPayload }
     }
 

@@ -3,6 +3,16 @@ import Testing
 @testable import TranscribeerApp
 
 struct SummarizationCatalogTests {
+    @Test("Backend changes prefer curated models over newer preview entries", arguments: [
+        (["new-preview", "gpt-6.1-sol"], "gpt-6.1-sol"),
+        (["new-preview", "gpt-6.1-terra"], "gpt-6.1-terra"),
+        (["new-preview"], "gpt-6.1-sol"),
+        ([], "gpt-6.1-sol"),
+    ])
+    func backendDefault(available: [String], expected: String) {
+        #expect(SummarizationCatalog.defaultModel(for: .openai, availableModels: available) == expected)
+    }
+
     @Test("Default option is always present and comes first")
     func defaultFirst() {
         let defaultModel = SummaryModelOption(backend: .openai, model: "gpt-4o")

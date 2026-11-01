@@ -27,8 +27,13 @@ struct ModelsDevServiceTests {
         #expect(reopened.summaryModels(for: .anthropic) == ["claude-test"])
     }
 
-    @Test("A failed refresh preserves the old menu and cache", arguments: [500, 200])
-    func failedRefreshKeepsCache(status: Int) async throws {
+    @Test("A failed or empty refresh preserves the old menu and cache", arguments: [
+        (500, "server error"),
+        (200, #"{"unrelated":{}}"#),
+        (200, #"{"openai":{"models":{}}}"#),
+        (200, #"{"openai":{"models":{"old":{"status":"deprecated"}}}}"#),
+    ])
+    func failedRefreshKeepsCache(status: Int, response: String) async throws {
         let fixture = try CatalogFixture()
         defer { fixture.remove() }
         try fixture.respond(with: catalog)
@@ -37,13 +42,40 @@ struct ModelsDevServiceTests {
         try FileManager.default.setAttributes(
             [.modificationDate: Date.distantPast], ofItemAtPath: fixture.cacheURL.path
         )
-        try fixture.respond(with: status == 200 ? "{\"unrelated\":{}}" : replacement)
+        try fixture.respond(with: response)
 
         let reopened = fixture.service(status: status)
         await reopened.refreshIfStale()
 
         #expect(reopened.summaryModels(for: .openai) == ["gpt-new", "gpt-older"])
         #expect(try Data(contentsOf: fixture.cacheURL) == saved)
+    }
+
+    @Test("Empty providers remain absent after downloading and reopening a partial catalog")
+    func emptyProvidersUseFallback() async throws {
+        let fixture = try CatalogFixture()
+        defer { fixture.remove() }
+        try fixture.respond(with: #"""
+        {
+          "openai":{"models":{}},
+          "anthropic":{"models":{"claude-test":{"modalities":{"input":["text"],"output":["text"]}}}},
+          "google-vertex":{"models":{"gemini-missing-modalities":{}}},
+          "google":{"models":{"gemini-text-only":{"modalities":{"input":["text"],"output":["text"]}}}}
+        }
+        """#)
+        let service = fixture.service()
+        await service.refreshIfStale()
+        #expect(service.summaryModels(for: .openai) == nil)
+        #expect(service.summaryModels(for: .gemini) == nil)
+        #expect(service.geminiTranscriptionModels == nil)
+        #expect(service.summaryModels(for: .anthropic) == ["claude-test"])
+
+        try fixture.respond(with: replacement)
+        let reopened = fixture.service()
+        await reopened.refreshIfStale()
+        #expect(reopened.summaryModels(for: .openai) == nil)
+        #expect(reopened.geminiTranscriptionModels == nil)
+        #expect(reopened.summaryModels(for: .anthropic) == ["claude-test"])
     }
 
     @Test("A malformed first response does not create a cache and a later retry can recover")

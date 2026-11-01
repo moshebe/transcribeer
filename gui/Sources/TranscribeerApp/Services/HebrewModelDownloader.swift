@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import os
 import TranscribeerCore
@@ -12,6 +13,7 @@ enum HebrewModelDownloadError: LocalizedError {
     case writeFailed(URL, underlying: Error)
     case network(underlying: Error)
     case missingBundles(archive: String)
+    case downloadInProgress
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +27,8 @@ enum HebrewModelDownloadError: LocalizedError {
             "Network error: \(underlying.localizedDescription)"
         case let .missingBundles(archive):
             "\(archive) doesn't contain a WhisperKit CoreML model (AudioEncoder, TextDecoder, MelSpectrogram)."
+        case .downloadInProgress:
+            "Another model download is in progress. Wait for it to finish and try again."
         }
     }
 }
@@ -58,23 +62,19 @@ private final class DownloadProgressSink: @unchecked Sendable {
 
 // MARK: - URLSession delegate
 
-private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+private final class DownloadDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let progressSink: DownloadProgressSink
+    private var observation: NSKeyValueObservation?
     init(progressSink: DownloadProgressSink) {
         self.progressSink = progressSink
     }
 
-    func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo _: URL) {}
-
-    func urlSession(
-        _: URLSession,
-        downloadTask _: URLSessionDownloadTask,
-        didWriteData _: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        progressSink.submit(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+    func urlSession(_: URLSession, didCreateTask task: URLSessionTask) {
+        let sink = progressSink
+        observation = task.progress.observe(\.fractionCompleted, options: [.initial, .new]) { progress, _ in
+            guard progress.totalUnitCount > 0 else { return }
+            sink.submit(progress.fractionCompleted)
+        }
     }
 }
 
@@ -184,6 +184,9 @@ final class HebrewModelDownloader {
             return
         }
 
+        let directoryLock = try lockDownloadDirectory()
+        defer { try? directoryLock.close() }
+        try removeAbandonedDownloads()
         currentDownload = entry
         progress = 0.0
         defer {
@@ -207,6 +210,7 @@ final class HebrewModelDownloader {
 
         // Download
         let sink = DownloadProgressSink { [weak self] value in
+            guard self?.currentDownload?.id == entry.id else { return }
             self?.progress = value
         }
         let downloadedURL = try await performDownload(
@@ -253,6 +257,43 @@ final class HebrewModelDownloader {
     }
 
     // MARK: - Private helpers
+
+    private func lockDownloadDirectory() throws -> FileHandle {
+        let lockURL = modelsBaseDir.appendingPathComponent(".download.lock")
+        do {
+            try FileManager.default.createDirectory(at: modelsBaseDir, withIntermediateDirectories: true)
+            let descriptor = open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+                let code = errno
+                try? handle.close()
+                if code == EWOULDBLOCK { throw HebrewModelDownloadError.downloadInProgress }
+                throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+            }
+            // Keep the lock file in place; unlinking it would let another process take a separate lock.
+            return handle
+        } catch let error as HebrewModelDownloadError {
+            throw error
+        } catch {
+            throw HebrewModelDownloadError.writeFailed(lockURL, underlying: error)
+        }
+    }
+
+    private func removeAbandonedDownloads() throws {
+        do {
+            let folders = try FileManager.default.contentsOfDirectory(
+                at: modelsBaseDir, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+            )
+            for folder in folders where folder.lastPathComponent.hasPrefix(".download-") {
+                let values = try folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
+                try FileManager.default.removeItem(at: folder)
+            }
+        } catch {
+            throw HebrewModelDownloadError.writeFailed(modelsBaseDir, underlying: error)
+        }
+    }
 
     private func performDownload(
         url: URL,

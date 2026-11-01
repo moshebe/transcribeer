@@ -252,9 +252,10 @@ struct SettingsView: View {
                     get: { LLMBackend.from(config.llmBackend) },
                     set: { newBackend in
                         config.llmBackend = newBackend.rawValue
-                        config.llmModel = SummarizationCatalog.models(
-                            for: newBackend, ollamaModels: ollamaModels
-                        ).first ?? AppConfig().llmModel
+                        config.llmModel = SummarizationCatalog.defaultModel(
+                            for: newBackend,
+                            availableModels: SummarizationCatalog.models(for: newBackend, ollamaModels: ollamaModels)
+                        )
                         apiKey = KeychainHelper.getAPIKey(backend: newBackend.rawValue) ?? ""
                         save()
                     }

@@ -43,7 +43,16 @@ enum SummarizationCatalog {
     @MainActor
     static func models(for backend: LLMBackend, ollamaModels: [String] = []) -> [String] {
         if let live = ModelsDevService.shared.summaryModels(for: backend) { return live }
-        return switch backend {
+        return bundledModels(for: backend, ollamaModels: ollamaModels)
+    }
+
+    static func defaultModel(for backend: LLMBackend, availableModels: [String]) -> String {
+        let preferred = bundledModels(for: backend, ollamaModels: availableModels)
+        return preferred.first(where: availableModels.contains) ?? preferred.first ?? AppConfig().llmModel
+    }
+
+    private static func bundledModels(for backend: LLMBackend, ollamaModels: [String]) -> [String] {
+        switch backend {
         case .openai: openaiModels
         case .anthropic: anthropicModels
         case .gemini: geminiModels
