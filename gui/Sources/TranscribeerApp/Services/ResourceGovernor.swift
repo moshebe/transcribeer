@@ -106,9 +106,7 @@ final class ResourceGovernor {
             }
             return TranscriptionBudget(
                 maxConcurrency: maxConcurrency,
-                allowANE: true,
-                allowParallel: true,
-                idleUnloadMinutes: 10
+                allowParallel: true
             )
         }
 
@@ -161,9 +159,7 @@ final class ResourceGovernor {
 
         return TranscriptionBudget(
             maxConcurrency: maxConcurrency,
-            allowANE: true,
-            allowParallel: allowParallel,
-            idleUnloadMinutes: 10
+            allowParallel: allowParallel
         )
     }
 

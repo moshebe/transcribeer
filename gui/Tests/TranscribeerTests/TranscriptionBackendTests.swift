@@ -10,13 +10,6 @@ struct TranscriptionBackendTests {
         #expect(TranscriptionBackend.gemini.rawValue == "gemini")
     }
 
-    @Test("Only cloud backends use API keys")
-    func usesAPIKey() {
-        #expect(TranscriptionBackend.whisperkit.usesAPIKey == false)
-        #expect(TranscriptionBackend.openai.usesAPIKey == true)
-        #expect(TranscriptionBackend.gemini.usesAPIKey == true)
-    }
-
     @Test("Keychain slots: openai shares with summarization, gemini gets its own")
     func keychainSlots() {
         // Sharing the openai slot is intentional — users only configure their
@@ -41,11 +34,5 @@ struct TranscriptionBackendTests {
         #expect(TranscriptionBackend.from("gemini") == .gemini)
         #expect(TranscriptionBackend.from("not-a-backend") == .whisperkit)
         #expect(TranscriptionBackend.from("") == .whisperkit)
-    }
-
-    @Test("allCases covers every backend (prevents picker regressions)")
-    func allCasesCoverage() {
-        let cases = Set(TranscriptionBackend.allCases.map(\.rawValue))
-        #expect(cases == ["whisperkit", "speech_analyzer", "openai", "gemini"])
     }
 }

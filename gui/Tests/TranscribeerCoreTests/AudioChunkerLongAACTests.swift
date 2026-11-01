@@ -109,7 +109,8 @@ struct AudioChunkerLongAACTests {
             outputFormat: .aacM4A(bitrate: 48_000),
             tempDir: tempDir
         )
-        #expect(!chunks.isEmpty, "expected at least one chunk")
+        let expectedCount = Int(ceil(sourceSeconds / chunkSeconds))
+        try #require(chunks.count == expectedCount)
 
         for (index, chunk) in chunks.enumerated() {
             let bytes = try Data(contentsOf: chunk.url).count
@@ -117,10 +118,7 @@ struct AudioChunkerLongAACTests {
                 bytes > 1_000,
                 "chunk[\(index)] is suspiciously small: \(bytes) bytes"
             )
-            let duration = try #require(
-                AudioChunker.wavDuration(url: chunk.url),
-                "chunk[\(index)] failed to open via AVAudioFile"
-            )
+            let duration = try decodedAudioDuration(chunk.url)
             #expect(
                 duration > 0.1,
                 "chunk[\(index)] decoded to \(duration) s — OpenAI would reject as audio_too_short"
@@ -128,8 +126,9 @@ struct AudioChunkerLongAACTests {
 
             // Each chunk should be within ~5% of its expected length
             // (full chunkSeconds for all but the last, which holds the tail).
-            let isLast = index == chunks.count - 1
-            let expected = isLast ? sourceSeconds - chunk.startOffset : chunkSeconds
+            let expectedOffset = Double(index) * chunkSeconds
+            #expect(abs(chunk.startOffset - expectedOffset) < 0.01)
+            let expected = min(chunkSeconds, sourceSeconds - expectedOffset)
             #expect(
                 abs(duration - expected) < max(0.5, expected * 0.05),
                 "chunk[\(index)] duration \(duration) s, expected ~\(expected) s"

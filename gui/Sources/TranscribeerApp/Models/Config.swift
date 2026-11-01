@@ -199,20 +199,6 @@ extension AppConfig {
         default: name
         }
     }
-
-    /// Returns `true` when the repo string looks like a CTranslate2 /
-    /// faster-whisper model rather than a WhisperKit CoreML repo.
-    ///
-    /// WhisperKit requires CoreML (`.mlmodelc` / `.mlpackage`) bundles.
-    /// CTranslate2 repos (suffix `-ct2`, owner `ctranslate2`, or path segment
-    /// `faster-whisper`) cannot be loaded by WhisperKit and will always fail
-    /// with `modelsUnavailable`.
-    static func isCTranslate2Repo(_ repo: String) -> Bool {
-        let lower = repo.lowercased()
-        return lower.hasSuffix("-ct2")
-            || lower.contains("ctranslate2")
-            || lower.contains("faster-whisper")
-    }
 }
 
 enum ConfigManager {
@@ -221,10 +207,10 @@ enum ConfigManager {
             .appendingPathComponent(".transcribeer/config.toml")
     }()
 
-    static func load() -> AppConfig {
+    static func load(from path: URL = configPath) -> AppConfig {
         var cfg = AppConfig()
         guard
-            let data = try? Data(contentsOf: configPath),
+            let data = try? Data(contentsOf: path),
             let toml = try? TOMLDecoder().decode(TOMLFile.self, from: data)
         else { return cfg }
 
@@ -320,8 +306,8 @@ enum ConfigManager {
         }
     }
 
-    static func save(_ cfg: AppConfig) {
-        let dir = configPath.deletingLastPathComponent()
+    static func save(_ cfg: AppConfig, to path: URL = configPath) {
+        let dir = path.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let speakers = cfg.numSpeakers
@@ -389,7 +375,7 @@ enum ConfigManager {
         export_folder_enabled = \(cfg.integrations.exportFolderEnabled)
         export_folder_path = \(tomlString(cfg.integrations.exportFolderPath))
         """
-        try? lines.write(to: configPath, atomically: true, encoding: .utf8)
+        try? lines.write(to: path, atomically: true, encoding: .utf8)
     }
 
     /// Encode a string as a TOML basic string literal — wraps in quotes and

@@ -60,39 +60,11 @@ private final class DownloadProgressSink: @unchecked Sendable {
 
 private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let progressSink: DownloadProgressSink
-    // Continuation is set once before the task starts; written from one thread, read from another.
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<URL, Error>?
-
     init(progressSink: DownloadProgressSink) {
         self.progressSink = progressSink
     }
 
-    func setContinuation(_ continuation: CheckedContinuation<URL, Error>) {
-        lock.withLock { self.continuation = continuation }
-    }
-
-    func urlSession(
-        _: URLSession,
-        downloadTask _: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        // Move file before it is deleted when this delegate method returns.
-        let dest = location.deletingLastPathComponent()
-            .appendingPathComponent(location.lastPathComponent + ".downloaded")
-        do {
-            try FileManager.default.moveItem(at: location, to: dest)
-        } catch {
-            resume(throwing: HebrewModelDownloadError.writeFailed(location, underlying: error))
-            return
-        }
-        resume(returning: dest)
-    }
-
-    func urlSession(_: URLSession, task _: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error else { return }
-        resume(throwing: HebrewModelDownloadError.network(underlying: error))
-    }
+    func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo _: URL) {}
 
     func urlSession(
         _: URLSession,
@@ -103,37 +75,6 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     ) {
         guard totalBytesExpectedToWrite > 0 else { return }
         progressSink.submit(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
-    }
-
-    private func resume(returning url: URL) {
-        lock.withLock {
-            continuation?.resume(returning: url)
-            continuation = nil
-        }
-    }
-
-    private func resume(throwing error: Error) {
-        lock.withLock {
-            continuation?.resume(throwing: error)
-            continuation = nil
-        }
-    }
-}
-
-// MARK: - Task box (Sendable wrapper for URLSessionDownloadTask)
-
-/// Thread-safe holder for a URLSessionDownloadTask so it can be safely
-/// cancelled from the `withTaskCancellationHandler` onCancel closure.
-private final class TaskBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var task: URLSessionDownloadTask?
-
-    func store(_ task: URLSessionDownloadTask) {
-        lock.withLock { self.task = task }
-    }
-
-    func cancel() {
-        lock.withLock { task?.cancel() }
     }
 }
 
@@ -251,7 +192,7 @@ final class HebrewModelDownloader {
         }
 
         let fm = FileManager.default
-        let tmpDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let tmpDir = modelsBaseDir.appendingPathComponent(".download-\(UUID().uuidString)", isDirectory: true)
         let tarballDest = tmpDir.appendingPathComponent("\(entry.id).tar.zst")
         let extractDir = tmpDir.appendingPathComponent("extract", isDirectory: true)
 
@@ -318,23 +259,25 @@ final class HebrewModelDownloader {
         tarballDest: URL,
         sink: DownloadProgressSink
     ) async throws -> URL {
-        let delegate = DownloadDelegate(progressSink: sink)
-        let cfg = URLSessionConfiguration.default
-        let delegateSession = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
-        // Box the task so the onCancel closure can safely reach it across concurrency domains.
-        let taskBox = TaskBox()
-
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                delegate.setContinuation(continuation)
-                let task = delegateSession.downloadTask(with: url)
-                taskBox.store(task)
-                task.resume()
-            }
-        } onCancel: {
-            taskBox.cancel()
-            try? FileManager.default.removeItem(at: tarballDest)
+        let result: (URL, URLResponse)
+        do {
+            result = try await session.download(
+                for: URLRequest(url: url),
+                delegate: DownloadDelegate(progressSink: sink)
+            )
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw HebrewModelDownloadError.network(underlying: error)
         }
+        let downloadedURL = result.0
+        defer { try? FileManager.default.removeItem(at: downloadedURL) }
+        try Task.checkCancellation()
+        do {
+            try FileManager.default.moveItem(at: downloadedURL, to: tarballDest)
+        } catch {
+            throw HebrewModelDownloadError.writeFailed(tarballDest, underlying: error)
+        }
+        return tarballDest
     }
 
     /// Extracts a `.tar.zst` (or any libarchive-supported format) into `destination`

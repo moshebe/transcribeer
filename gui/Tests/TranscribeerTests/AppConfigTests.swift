@@ -23,8 +23,8 @@ struct AppConfigTests {
         #expect(!cfg.promptOnStop) // default false — user opts in (Track 4.3)
     }
 
-    @Test("Transcription backend + cloud models round-trip via TOMLDecoder")
-    func transcriptionBackendRoundTrip() throws {
+    @Test("TOML decoding reads transcription backend and cloud model fields")
+    func decodesTranscriptionBackend() throws {
         let doc = """
         [transcription]
         language = "en"
@@ -68,27 +68,7 @@ struct AppConfigTests {
         #expect(AppConfig.canonicalWhisperModel("distil-whisper_distil-large-v3") == "distil-whisper_distil-large-v3")
     }
 
-    @Test(
-        "isCTranslate2Repo detects CTranslate2 / faster-whisper repos",
-        arguments: [
-            // True cases — should warn the user
-            (repo: "ivrit-ai/whisper-large-v3-turbo-ct2", expected: true),
-            (repo: "someone/my-model-ct2", expected: true),
-            (repo: "ctranslate2/whisper-large-v3", expected: true),
-            (repo: "owner/faster-whisper-large-v3", expected: true),
-            (repo: "OWNER/MODEL-CT2", expected: true), // case-insensitive
-            // False cases — legitimate CoreML / standard repos
-            (repo: "", expected: false),
-            (repo: "argmaxinc/whisperkit-coreml", expected: false),
-            (repo: "owner/ivrit-ai-whisper-large-v3-turbo-coreml", expected: false),
-            (repo: "openai/whisper", expected: false),
-        ]
-    )
-    func isCTranslate2Repo(repo: String, expected: Bool) {
-        #expect(AppConfig.isCTranslate2Repo(repo) == expected)
-    }
-
-    @Test("Equatable conformance compares all fields")
+    @Test("Changing the language changes config equality")
     func equatable() {
         let a = AppConfig()
         var b = AppConfig()
@@ -105,8 +85,8 @@ struct AppConfigTests {
         var cfg = AppConfig()
         cfg.audio.inputDeviceUID = "MyMic-UID"
         cfg.audio.outputDeviceUID = "MyOut-UID"
-        cfg.audio.aec = false
-        cfg.audio.selfLabel = "Alice"
+        cfg.audio.aec = true
+        cfg.audio.selfLabel = "Alice \"Host\""
         cfg.audio.otherLabel = "Bob"
         cfg.audio.ffmpegPath = "/opt/homebrew/bin/ffmpeg"
         cfg.audio.diarizeMicMultiuser = true
@@ -118,50 +98,15 @@ struct AppConfigTests {
 
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-        // Use reflection or direct write since ConfigManager.configPath is static
-        let lines = """
-        [pipeline]
-        mode = "\(cfg.pipelineMode)"
-        meeting_auto_record = \(cfg.meetingAutoRecord)
-        meeting_auto_record_delay = \(cfg.meetingAutoRecordDelay)
-
-        [transcription]
-        language = "\(cfg.language)"
-        model = "\(cfg.whisperModel)"
-        model_repo = "\(cfg.whisperModelRepo)"
-        diarization = "\(cfg.diarization)"
-        num_speakers = \(cfg.numSpeakers)
-
-        [summarization]
-        backend = "\(cfg.llmBackend)"
-        model = "\(cfg.llmModel)"
-        ollama_host = "\(cfg.ollamaHost)"
-        prompt_on_stop = \(cfg.promptOnStop)
-
-        [paths]
-        sessions_dir = "\(cfg.sessionsDir)"
-
-        [audio]
-        input_device_uid = "\(cfg.audio.inputDeviceUID)"
-        output_device_uid = "\(cfg.audio.outputDeviceUID)"
-        aec = \(cfg.audio.aec)
-        self_label = "\(cfg.audio.selfLabel)"
-        other_label = "\(cfg.audio.otherLabel)"
-        ffmpeg_path = "\(cfg.audio.ffmpegPath)"
-        diarize_mic_multiuser = \(cfg.audio.diarizeMicMultiuser)
-        """
-        try lines.write(to: path, atomically: true, encoding: .utf8)
-
-        // Load via TOMLDecoder directly to verify round-trip
-        let data = try Data(contentsOf: path)
-        let decoded = try TOMLDecoder().decode(TOMLFile.self, from: data)
-        #expect(decoded.audio?.input_device_uid == "MyMic-UID")
-        #expect(decoded.audio?.output_device_uid == "MyOut-UID")
-        #expect(decoded.audio?.aec == false)
-        #expect(decoded.audio?.self_label == "Alice")
-        #expect(decoded.audio?.other_label == "Bob")
-        #expect(decoded.audio?.ffmpeg_path == "/opt/homebrew/bin/ffmpeg")
-        #expect(decoded.audio?.diarize_mic_multiuser == true)
+        ConfigManager.save(cfg, to: path)
+        let decoded = ConfigManager.load(from: path)
+        #expect(decoded.audio.inputDeviceUID == "MyMic-UID")
+        #expect(decoded.audio.outputDeviceUID == "MyOut-UID")
+        #expect(decoded.audio.aec)
+        #expect(decoded.audio.selfLabel == "Alice \"Host\"")
+        #expect(decoded.audio.otherLabel == "Bob")
+        #expect(decoded.audio.ffmpegPath == "/opt/homebrew/bin/ffmpeg")
+        #expect(decoded.audio.diarizeMicMultiuser == true)
     }
 
     @Test("Missing [audio] section uses defaults")
@@ -174,8 +119,17 @@ struct AppConfigTests {
         language = "en"
         """.utf8)
 
-        let file = try TOMLDecoder().decode(TOMLFile.self, from: toml)
-        #expect(file.audio == nil)
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("config-\(UUID()).toml")
+        defer { try? FileManager.default.removeItem(at: path) }
+        try toml.write(to: path)
+
+        let config = ConfigManager.load(from: path)
+        #expect(config.language == "en")
+        #expect(config.audio.inputDeviceUID.isEmpty)
+        #expect(config.audio.outputDeviceUID.isEmpty)
+        #expect(config.audio.aec == false)
+        #expect(config.audio.selfLabel == "You")
+        #expect(config.audio.otherLabel == "Them")
     }
 
     // MARK: - TOML string escaping
@@ -198,25 +152,18 @@ struct AppConfigTests {
 
     @Test("ConfigManager round-trips strings containing quotes and backslashes")
     func tomlStringRoundTrip() throws {
-        // Build a TOML document using the escaper directly (we can't point
-        // ConfigManager at a custom path without refactoring) and verify it
-        // decodes back to the original values.
-        let selfLabel = "Guy \"the Voice\" Smith"
-        let otherLabel = "back\\slash\tand\ttab"
-        let sessionsDir = "/Users/x/With \"Quotes\"/sessions"
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("config-\(UUID()).toml")
+        defer { try? FileManager.default.removeItem(at: path) }
+        var config = AppConfig()
+        config.audio.selfLabel = "Guy \"the Voice\" Smith"
+        config.audio.otherLabel = "back\\slash\tand\ttab"
+        config.sessionsDir = "/Users/x/With \"Quotes\"/sessions"
 
-        let doc = """
-        [paths]
-        sessions_dir = \(ConfigManager.tomlString(sessionsDir))
+        ConfigManager.save(config, to: path)
+        let decoded = ConfigManager.load(from: path)
 
-        [audio]
-        self_label = \(ConfigManager.tomlString(selfLabel))
-        other_label = \(ConfigManager.tomlString(otherLabel))
-        """
-
-        let decoded = try TOMLDecoder().decode(TOMLFile.self, from: Data(doc.utf8))
-        #expect(decoded.audio?.self_label == selfLabel)
-        #expect(decoded.audio?.other_label == otherLabel)
-        #expect(decoded.paths?.sessions_dir == sessionsDir)
+        #expect(decoded.audio.selfLabel == config.audio.selfLabel)
+        #expect(decoded.audio.otherLabel == config.audio.otherLabel)
+        #expect(decoded.sessionsDir == config.sessionsDir)
     }
 }

@@ -1,12 +1,17 @@
-import XCTest
+import Foundation
+import Testing
 @testable import TranscribeerCore
 
-final class AudioChunkerTests: XCTestCase {
+struct AudioChunkerTests {
     // MARK: - Helpers
 
-    /// Build a minimal PCM WAV with the given number of silent (zero) samples.
+    /// Build a minimal PCM WAV with the given number of distinguishable samples.
     private func makeWAV(sampleRate: UInt32 = 16000, samples: Int) -> Data {
-        let pcm = Data(repeating: 0, count: samples * 2) // 16-bit
+        var pcm = Data()
+        for index in 0..<samples {
+            var sample = Int16(index % 20_000 - 10_000).littleEndian
+            withUnsafeBytes(of: &sample) { pcm.append(contentsOf: $0) }
+        }
         var h = Data(count: 44)
         func w32(_ off: Int, _ v: UInt32) {
             var le = v.littleEndian
@@ -39,33 +44,10 @@ final class AudioChunkerTests: XCTestCase {
         return url
     }
 
-    // MARK: - wavDuration
-
-    func testWavDurationMatchesSampleCount() throws {
-        let wav = makeWAV(sampleRate: 16000, samples: 16000)
-        let url = try writeTemp(wav)
-        defer { try? FileManager.default.removeItem(at: url) }
-        let duration = try XCTUnwrap(AudioChunker.wavDuration(url: url))
-        XCTAssertEqual(duration, 1.0, accuracy: 0.001)
-    }
-
-    func testWavDurationFor5Seconds() throws {
-        let wav = makeWAV(sampleRate: 16000, samples: 80000)
-        let url = try writeTemp(wav)
-        defer { try? FileManager.default.removeItem(at: url) }
-        let duration = try XCTUnwrap(AudioChunker.wavDuration(url: url))
-        XCTAssertEqual(duration, 5.0, accuracy: 0.001)
-    }
-
-    func testWavDurationReturnsNilForTruncatedFile() throws {
-        let url = try writeTemp(Data(repeating: 0, count: 10))
-        defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertNil(AudioChunker.wavDuration(url: url))
-    }
-
     // MARK: - split
 
-    func testSplitShortFileProducesOneChunk() throws {
+    @Test
+    func splitShortFileProducesOneChunk() throws {
         let wav = makeWAV(sampleRate: 16000, samples: 32000) // 2 sec
         let src = try writeTemp(wav)
         let tempDir = FileManager.default.temporaryDirectory
@@ -75,11 +57,12 @@ final class AudioChunkerTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDir)
         }
         let chunks = try AudioChunker.split(source: src, chunkDuration: 10, tempDir: tempDir)
-        XCTAssertEqual(chunks.count, 1)
-        XCTAssertEqual(chunks[0].startOffset, 0.0)
+        try #require(chunks.count == 1)
+        #expect(chunks[0].startOffset == 0.0)
     }
 
-    func testSplitProducesCorrectChunkCount() throws {
+    @Test
+    func splitProducesCorrectChunkCount() throws {
         // 25 seconds → 3 chunks (10, 10, 5)
         let wav = makeWAV(sampleRate: 16000, samples: 25 * 16000)
         let src = try writeTemp(wav)
@@ -90,13 +73,14 @@ final class AudioChunkerTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDir)
         }
         let chunks = try AudioChunker.split(source: src, chunkDuration: 10, tempDir: tempDir)
-        XCTAssertEqual(chunks.count, 3)
-        XCTAssertEqual(chunks[0].startOffset, 0.0, accuracy: 0.001)
-        XCTAssertEqual(chunks[1].startOffset, 10.0, accuracy: 0.001)
-        XCTAssertEqual(chunks[2].startOffset, 20.0, accuracy: 0.001)
+        try #require(chunks.count == 3)
+        #expect(abs(chunks[0].startOffset - 0.0) < 0.001)
+        #expect(abs(chunks[1].startOffset - 10.0) < 0.001)
+        #expect(abs(chunks[2].startOffset - 20.0) < 0.001)
     }
 
-    func testChunkFilesAreValidWAV() throws {
+    @Test
+    func chunkFilesAreValidWAV() throws {
         let wav = makeWAV(sampleRate: 16000, samples: 32000) // 2 sec
         let src = try writeTemp(wav)
         let tempDir = FileManager.default.temporaryDirectory
@@ -106,17 +90,18 @@ final class AudioChunkerTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDir)
         }
         let chunks = try AudioChunker.split(source: src, chunkDuration: 1, tempDir: tempDir)
-        XCTAssertEqual(chunks.count, 2)
+        try #require(chunks.count == 2)
         for chunk in chunks {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: chunk.url.path))
+            #expect(FileManager.default.fileExists(atPath: chunk.url.path))
             let d = try Data(contentsOf: chunk.url)
-            XCTAssertEqual(d[0...3], Data([0x52, 0x49, 0x46, 0x46])) // RIFF
-            let dur = try XCTUnwrap(AudioChunker.wavDuration(url: chunk.url))
-            XCTAssertEqual(dur, 1.0, accuracy: 0.01)
+            #expect(d[0...3] == Data([0x52, 0x49, 0x46, 0x46])) // RIFF
+            let dur = try decodedAudioDuration(chunk.url)
+            #expect(abs(dur - 1.0) < 0.01)
         }
     }
 
-    func testSplitPreservesTotalPCMData() throws {
+    @Test
+    func splitPreservesTotalPCMData() throws {
         let sampleCount = 25 * 16000
         let wav = makeWAV(sampleRate: 16000, samples: sampleCount)
         let src = try writeTemp(wav)
@@ -127,10 +112,10 @@ final class AudioChunkerTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDir)
         }
         let chunks = try AudioChunker.split(source: src, chunkDuration: 10, tempDir: tempDir)
-        let totalPCMBytes = try chunks.reduce(0) { acc, chunk in
-            let d = try Data(contentsOf: chunk.url)
-            return acc + (d.count - 44)
+        var reconstructed = Data()
+        for chunk in chunks {
+            reconstructed.append(try Data(contentsOf: chunk.url).dropFirst(44))
         }
-        XCTAssertEqual(totalPCMBytes, sampleCount * 2)
+        #expect(reconstructed == wav.dropFirst(44))
     }
 }

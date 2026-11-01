@@ -151,26 +151,4 @@ struct ResourceGovernorTests {
         #expect(budget.maxConcurrency == 3)
         #expect(budget.allowParallel == true)
     }
-
-    // MARK: - ANE and idle unload constants
-
-    @Test("allowANE is always true")
-    func allowANEAlwaysTrue() {
-        // Check across several scenarios
-        let scenarios: [(ProcessInfo.ThermalState, Bool)] = [
-            (.critical, false),
-            (.nominal, false),
-            (.nominal, true),
-        ]
-        for (thermal, lowPower) in scenarios {
-            let governor = makeGovernor(thermal: thermal, lowPower: lowPower)
-            #expect(governor.currentBudget().allowANE == true)
-        }
-    }
-
-    @Test("idleUnloadMinutes is always 10")
-    func idleUnloadMinutesAlwaysTen() {
-        let governor = makeGovernor()
-        #expect(governor.currentBudget().idleUnloadMinutes == 10)
-    }
 }

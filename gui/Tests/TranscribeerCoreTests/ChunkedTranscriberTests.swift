@@ -1,48 +1,54 @@
-import XCTest
+import Foundation
+import Testing
 @testable import TranscribeerCore
 
-final class ChunkedTranscriberTests: XCTestCase {
-    func testMergeEmptyChunksReturnsEmpty() {
+struct ChunkedTranscriberTests {
+    @Test
+    func mergeEmptyChunksReturnsEmpty() throws {
         let result = ChunkedTranscriber.mergeChunkResults([])
-        XCTAssertTrue(result.isEmpty)
+        #expect(result.isEmpty)
     }
 
-    func testMergeSingleChunkPreservesSegments() {
+    @Test
+    func mergeSingleChunkPreservesSegments() throws {
         let segs = [
             TranscriptSegment(start: 0, end: 1, text: "Hello"),
             TranscriptSegment(start: 1, end: 2, text: "world"),
         ]
         let result = ChunkedTranscriber.mergeChunkResults([(offset: 0, segments: segs)])
-        XCTAssertEqual(result.count, 2)
-        XCTAssertEqual(result[0].text, "Hello")
-        XCTAssertEqual(result[0].start, 0.0)
-        XCTAssertEqual(result[1].start, 1.0)
+        try #require(result.count == 2)
+        #expect(result[0].text == "Hello")
+        #expect(result[0].start == 0.0)
+        #expect(result[1].start == 1.0)
     }
 
-    func testMergeAppliesOffsetToTimestamps() {
+    @Test
+    func mergeAppliesOffsetToTimestamps() throws {
         let segs = [TranscriptSegment(start: 0.5, end: 1.0, text: "First")]
         let result = ChunkedTranscriber.mergeChunkResults([(offset: 600, segments: segs)])
-        XCTAssertEqual(result[0].start, 600.5, accuracy: 0.001)
-        XCTAssertEqual(result[0].end, 601.0, accuracy: 0.001)
+        #expect(abs(result[0].start - 600.5) < 0.001)
+        #expect(abs(result[0].end - 601.0) < 0.001)
     }
 
-    func testMergeMultipleChunksSortedByStart() {
+    @Test
+    func mergeMultipleChunksSortedByStart() throws {
         let chunk0 = (offset: 0.0, segments: [TranscriptSegment(start: 5, end: 10, text: "A")])
         let chunk1 = (offset: 600.0, segments: [TranscriptSegment(start: 2, end: 4, text: "B")])
-        let result = ChunkedTranscriber.mergeChunkResults([chunk0, chunk1])
-        XCTAssertEqual(result.count, 2)
-        XCTAssertEqual(result[0].text, "A")  // start = 5
-        XCTAssertEqual(result[1].text, "B")  // start = 602
+        let result = ChunkedTranscriber.mergeChunkResults([chunk1, chunk0])
+        try #require(result.count == 2)
+        #expect(result[0].text == "A")  // start = 5
+        #expect(result[1].text == "B")  // start = 602
     }
 
-    func testMergeFiltersEmptyText() {
+    @Test
+    func mergeFiltersEmptyText() throws {
         let segs = [
             TranscriptSegment(start: 0, end: 1, text: "   "),
             TranscriptSegment(start: 1, end: 2, text: "Hello"),
             TranscriptSegment(start: 2, end: 3, text: ""),
         ]
         let result = ChunkedTranscriber.mergeChunkResults([(offset: 0, segments: segs)])
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].text, "Hello")
+        try #require(result.count == 1)
+        #expect(result[0].text == "Hello")
     }
 }

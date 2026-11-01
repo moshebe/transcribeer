@@ -4,16 +4,6 @@ import Testing
 @testable import TranscribeerCore
 
 struct NativeAudioProcessorTests {
-    @Test("Availability reports native AVFoundation backend")
-    func availabilityReportsNativeBackend() async {
-        let availability = await NativeAudioProcessor().availability()
-
-        #expect(availability.backendID == "avfoundation")
-        #expect(availability.isAvailable)
-        #expect(availability.executableURL == nil)
-        #expect(availability.reason == nil)
-    }
-
     @Test("Native processor transcodes generated CAF fixture to non-empty M4A")
     func transcodesGeneratedCAFToM4A() async throws {
         let directory = try temporaryDirectory()

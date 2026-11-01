@@ -39,74 +39,6 @@ struct SessionManagerGCTests {
         return dir
     }
 
-    // MARK: - isAbandoned
-
-    @Test("Empty old directory is abandoned")
-    func emptyOldDirIsAbandoned() throws {
-        let sessionsDir = try Self.makeSessionsDir()
-        defer { try? FileManager.default.removeItem(at: sessionsDir) }
-        let dir = try Self.makeSession(
-            in: sessionsDir,
-            name: "empty",
-            startedAt: Date().addingTimeInterval(-300),
-        )
-        #expect(SessionManager.isAbandoned(sessionDir: dir))
-    }
-
-    @Test("Directory with only leftover .caf files is abandoned")
-    func cafOnlyDirIsAbandoned() throws {
-        // Reproduces the Zoom-flicker bug: auto-record kicked off, wrote .caf
-        // stems, then meeting-detector flickered off and the session was
-        // abandoned before the pipeline merged them into audio.m4a.
-        let sessionsDir = try Self.makeSessionsDir()
-        defer { try? FileManager.default.removeItem(at: sessionsDir) }
-        let dir = try Self.makeSession(
-            in: sessionsDir,
-            name: "caf-only",
-            files: ["audio.sys.caf": "stub", "audio.mic.caf": "stub"],
-            startedAt: Date().addingTimeInterval(-300),
-        )
-        #expect(SessionManager.isAbandoned(sessionDir: dir))
-    }
-
-    @Test("Directory with audio.m4a is kept")
-    func m4aIsKept() throws {
-        let sessionsDir = try Self.makeSessionsDir()
-        defer { try? FileManager.default.removeItem(at: sessionsDir) }
-        let dir = try Self.makeSession(
-            in: sessionsDir,
-            name: "real",
-            files: ["audio.m4a": "stub"],
-            startedAt: Date().addingTimeInterval(-300),
-        )
-        #expect(!SessionManager.isAbandoned(sessionDir: dir))
-    }
-
-    @Test("Directory with transcript.txt is kept even without audio")
-    func transcriptIsKept() throws {
-        let sessionsDir = try Self.makeSessionsDir()
-        defer { try? FileManager.default.removeItem(at: sessionsDir) }
-        let dir = try Self.makeSession(
-            in: sessionsDir,
-            name: "tx",
-            files: ["transcript.txt": "hello"],
-            startedAt: Date().addingTimeInterval(-300),
-        )
-        #expect(!SessionManager.isAbandoned(sessionDir: dir))
-    }
-
-    @Test("Directory younger than minAge is kept (may be in-flight)")
-    func youngDirIsKept() throws {
-        let sessionsDir = try Self.makeSessionsDir()
-        defer { try? FileManager.default.removeItem(at: sessionsDir) }
-        let dir = try Self.makeSession(
-            in: sessionsDir,
-            name: "fresh",
-            startedAt: Date().addingTimeInterval(-5),
-        )
-        #expect(!SessionManager.isAbandoned(sessionDir: dir, minAge: 60))
-    }
-
     // MARK: - gcAbandonedSessions
 
     @Test("Sweep removes only abandoned sessions, leaves real ones intact")
@@ -134,6 +66,13 @@ struct SessionManagerGCTests {
             startedAt: Date(),
         )
 
+        _ = try Self.makeSession(
+            in: sessionsDir,
+            name: "transcript-only",
+            files: ["transcript.txt": "hello"],
+            startedAt: old,
+        )
+
         let trashed = SessionManager.gcAbandonedSessions(sessionsDir: sessionsDir.path)
         #expect(trashed.count == 2)
         #expect(trashed.contains { $0.lastPathComponent == "abandoned-1" })
@@ -143,5 +82,8 @@ struct SessionManagerGCTests {
         let remaining = try FileManager.default.contentsOfDirectory(atPath: sessionsDir.path)
         #expect(remaining.contains("keeper"))
         #expect(remaining.contains("fresh"))
+        #expect(remaining.contains("transcript-only"))
+        #expect(remaining.contains("abandoned-1") == false)
+        #expect(remaining.contains("abandoned-2") == false)
     }
 }

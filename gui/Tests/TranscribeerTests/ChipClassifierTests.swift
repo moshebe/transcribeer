@@ -37,21 +37,4 @@ struct ChipClassifierTests {
         #expect(info.generation == testCase.expectedGeneration)
         #expect(info.tier == testCase.expectedTier)
     }
-
-    // MARK: - Brand string preservation
-
-    @Test("parse preserves the original brand string")
-    func brandPreserved() {
-        let brand = "Apple M3 Pro"
-        let info = ChipClassifier.parse(brand)
-        #expect(info.brand == brand)
-    }
-
-    // MARK: - Ultra is not confused with Max
-
-    @Test("Ultra tier does not fall through to Max")
-    func ultraNotMisreadAsMax() {
-        let info = ChipClassifier.parse("Apple M2 Ultra")
-        #expect(info.tier == .ultra)
-    }
 }

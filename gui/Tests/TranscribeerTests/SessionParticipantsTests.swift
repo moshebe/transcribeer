@@ -92,14 +92,11 @@ struct SessionParticipantsTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let t0 = Date(timeIntervalSince1970: 1_000)
-        let written = SessionManager.appendParticipants(
-            dir,
-            observed: [participant("Alice", at: t0, isMe: true, isHost: true)],
-        )
-        #expect(written.count == 1)
+        let observed = [participant("Alice", at: t0, isMe: true, isHost: true)]
+        SessionManager.appendParticipants(dir, observed: observed)
 
-        let readBack = SessionManager.readParticipants(dir)
-        #expect(readBack == written)
+        let readBack = SessionManager.sessionDetail(dir).participants
+        #expect(readBack == observed)
         #expect(readBack[0].isHost)
         #expect(readBack[0].isMe)
     }
