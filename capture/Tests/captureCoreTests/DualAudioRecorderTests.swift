@@ -169,4 +169,25 @@ struct DualAudioRecorderTests {
         // which `timing.json` cannot encode.
         #expect(timing.sysEffectiveSampleRate == 0)
     }
+
+    @Test("A long outage doesn't skew the effective rate of the captured audio")
+    func effectiveRateIgnoresOutage() async throws {
+        let dir = makeSessionDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let recorder = DualAudioRecorder(sessionDir: dir)
+        let second = (0..<48_000).map { _ in Float(0.2) }
+        let start = Date()
+        // 1 s, 1 s, then a 90 s outage (padding capped at 30 s), then 1 s.
+        try recorder.writeSys(pcmBuffer(samples: second), at: start, generation: 1)
+        try recorder.writeSys(pcmBuffer(samples: second), at: start.addingTimeInterval(1), generation: 1)
+        try recorder.writeSys(pcmBuffer(samples: second), at: start.addingTimeInterval(92), generation: 2)
+
+        let timing = await recorder.stop()
+
+        // 3 s captured over 2 s between first and last arrival, outage excluded.
+        #expect(abs(timing.sysEffectiveSampleRate - 48_000 * 3 / 2) < 1)
+        #expect(timing.sysDeclaredSampleRate == 48_000)
+    }
 }

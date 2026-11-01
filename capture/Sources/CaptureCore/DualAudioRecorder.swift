@@ -51,14 +51,6 @@ public final class DualAudioRecorder: @unchecked Sendable {
     /// (e.g. format mismatch due to a VPIO/Bluetooth SCO context).  The error
     /// message is user-facing and safe to display directly in an alert.
     public func start() async throws {
-        // A rebuilt capture (audio route change) leaves a hole in its stream;
-        // the writer fills it with silence so mic and system audio stay aligned.
-        micCapture.onReconfigure = { [weak self] in
-            self?.stateLock.withLock { $0.mic.markDiscontinuity() }
-        }
-        sysCapture.onReconfigure = { [weak self] in
-            self?.stateLock.withLock { $0.sys.markDiscontinuity() }
-        }
         let sysStreams = try await sysCapture.bufferStream(outputDeviceID: outputDeviceID)
         let micStream = micCapture.bufferStream(
             deviceID: inputDeviceID,
@@ -75,14 +67,14 @@ public final class DualAudioRecorder: @unchecked Sendable {
         }
 
         micTask = Task { [self] in
-            for await buffer in micStream {
-                writeMic(buffer)
+            for await captured in micStream {
+                writeMic(captured.buffer, generation: captured.generation)
             }
         }
 
         sysTask = Task { [self] in
-            for await buffer in sysStreams.systemAudio {
-                writeSys(buffer)
+            for await captured in sysStreams.systemAudio {
+                writeSys(captured.buffer, generation: captured.generation)
             }
         }
     }
@@ -106,15 +98,7 @@ public final class DualAudioRecorder: @unchecked Sendable {
             meta.micStartEpoch = state.mic.anchor?.timeIntervalSince1970
             meta.sysStartEpoch = state.sys.anchor?.timeIntervalSince1970
             meta.sysDeclaredSampleRate = state.sys.fileSampleRate
-            // Under a second of wall clock is too short to measure a rate;
-            // 0 tells `AudioMixer` to trust the declared one.
-            if let endDate = state.sys.lastWriteDate,
-               let anchor = state.sys.anchor,
-               state.sys.framesWritten > 0,
-               endDate.timeIntervalSince(anchor) >= 1 {
-                meta.sysEffectiveSampleRate =
-                    Double(state.sys.framesWritten) / endDate.timeIntervalSince(anchor)
-            }
+            meta.sysEffectiveSampleRate = Self.effectiveSampleRate(of: state.sys)
             return meta
         }
     }
@@ -126,23 +110,25 @@ public final class DualAudioRecorder: @unchecked Sendable {
     /// needing Core Audio hardware; normal capture uses the async stream
     /// path started by `start()`.
     @_spi(Testing)
-    public func writeMic(_ buffer: AVAudioPCMBuffer, at date: Date = Date()) {
-        stateLock.withLock { $0.mic.write(buffer, at: date) }
+    public func writeMic(_ buffer: AVAudioPCMBuffer, at date: Date = Date(), generation: Int = 0) {
+        stateLock.withLock { $0.mic.write(buffer, at: date, generation: generation) }
     }
 
     /// Append a sys PCM buffer. See `writeMic` for the SPI rationale.
     @_spi(Testing)
-    public func writeSys(_ buffer: AVAudioPCMBuffer, at date: Date = Date()) {
-        stateLock.withLock { $0.sys.write(buffer, at: date) }
+    public func writeSys(_ buffer: AVAudioPCMBuffer, at date: Date = Date(), generation: Int = 0) {
+        stateLock.withLock { $0.sys.write(buffer, at: date, generation: generation) }
     }
 
-    /// Simulate a capture rebuild for tests (normally driven by
-    /// `onReconfigure` from the captures).
-    @_spi(Testing)
-    public func markDiscontinuity(mic: Bool, sys: Bool) {
-        stateLock.withLock { state in
-            if mic { state.mic.markDiscontinuity() }
-            if sys { state.sys.markDiscontinuity() }
-        }
+    /// The rate the device actually delivered, measured over captured audio
+    /// only: rebuild gaps and their (capped) padding are excluded, so a long
+    /// outage can't skew the drift correction for the whole track. Returns 0
+    /// (trust the declared rate) when under a second was captured.
+    static func effectiveSampleRate(of track: SourceTrackWriter) -> Double {
+        guard let endDate = track.lastWriteDate, let anchor = track.anchor else { return 0 }
+        let capturedSeconds = endDate.timeIntervalSince(anchor) - track.gapSeconds
+        let capturedFrames = track.framesWritten - track.paddedFrames
+        guard capturedSeconds >= 1, capturedFrames > 0 else { return 0 }
+        return Double(capturedFrames) / capturedSeconds
     }
 }

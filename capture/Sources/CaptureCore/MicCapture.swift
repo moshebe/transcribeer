@@ -61,7 +61,7 @@ public final class MicCapture: @unchecked Sendable {
     private let _hasCapturedFrames = SyncBool()
     private let _error = SyncString()
     private let _streamContinuation = OSAllocatedUnfairLock<
-        AsyncStream<AVAudioPCMBuffer>.Continuation?
+        AsyncStream<CapturedBuffer>.Continuation?
     >(uncheckedState: nil)
     private let _muted = SyncBool()
 
@@ -78,12 +78,14 @@ public final class MicCapture: @unchecked Sendable {
 
     private static let restartDebounce: DispatchTimeInterval = .milliseconds(300)
     private static let restartRetryDelay: DispatchTimeInterval = .seconds(1)
-    /// ~15 s of retries — macOS 27 takes ~6 s to bring AirPods' mic up.
-    private static let maxRestartAttempts = 15
+    /// Fast retries cover ~15 s — macOS 27 takes ~6 s to bring AirPods' mic
+    /// up. After that keep trying slowly until stop, so a headset that comes
+    /// back later still gets recorded.
+    private static let fastRestartAttempts = 15
+    private static let slowRestartRetryDelay: DispatchTimeInterval = .seconds(5)
 
-    /// Called (on an internal queue) right before the engine is rebuilt after
-    /// a route change, so the writer can account for the gap.
-    public var onReconfigure: (@Sendable () -> Void)?
+    /// Incremented for every engine build; stamped on each buffer.
+    private var generation = 0
 
     public var audioLevel: Float { _muted.value ? 0 : _audioLevel.value }
     public var hasCapturedFrames: Bool { _hasCapturedFrames.value }
@@ -99,7 +101,7 @@ public final class MicCapture: @unchecked Sendable {
     public func bufferStream(
         deviceID: AudioDeviceID? = nil,
         echoCancellation: Bool = false
-    ) -> AsyncStream<AVAudioPCMBuffer> {
+    ) -> AsyncStream<CapturedBuffer> {
         _streamContinuation.withLock { $0?.finish(); $0 = nil }
         engineQueue.sync { teardownEngine() }
 
@@ -130,7 +132,7 @@ public final class MicCapture: @unchecked Sendable {
 
     /// Build a fresh engine bound to the requested device, install the tap and
     /// start it. Returns a user-facing error message on failure.
-    private func startEngine(continuation: AsyncStream<AVAudioPCMBuffer>.Continuation) -> String? {
+    private func startEngine(continuation: AsyncStream<CapturedBuffer>.Continuation) -> String? {
         let engine = makeFreshEngine()
         let inputNode = engine.inputNode
         Self.applyVoiceProcessing(inputNode, enabled: echoCancellation)
@@ -155,7 +157,8 @@ public final class MicCapture: @unchecked Sendable {
             return error
         }
 
-        installTap(inputNode: inputNode, tapFormat: tapFormat, continuation: continuation)
+        generation += 1
+        installTap(inputNode: inputNode, tapFormat: tapFormat, generation: generation, continuation: continuation)
 
         do {
             try engine.start()
@@ -226,18 +229,14 @@ public final class MicCapture: @unchecked Sendable {
             watchDefaultInput()
         }
 
-        onReconfigure?()
         guard let error = startEngine(continuation: continuation) else { return }
 
         // Bluetooth headsets can take several seconds to come up; keep trying
         // rather than ending the recording.
-        guard attempt < Self.maxRestartAttempts else {
-            logger.error("mic restart gave up: \(error, privacy: .public)")
-            _error.value = error
-            return
-        }
+        logger.error("mic restart failed attempt=\(attempt, privacy: .public): \(error, privacy: .public)")
+        let delay = attempt < Self.fastRestartAttempts ? Self.restartRetryDelay : Self.slowRestartRetryDelay
         let generation = restartGeneration
-        engineQueue.asyncAfter(deadline: .now() + Self.restartRetryDelay) { [self] in
+        engineQueue.asyncAfter(deadline: .now() + delay) { [self] in
             guard generation == restartGeneration else { return }
             restart(reason: reason, attempt: attempt + 1)
         }
@@ -342,7 +341,8 @@ public final class MicCapture: @unchecked Sendable {
     private func installTap(
         inputNode: AVAudioInputNode,
         tapFormat: AVAudioFormat,
-        continuation: AsyncStream<AVAudioPCMBuffer>.Continuation
+        generation: Int,
+        continuation: AsyncStream<CapturedBuffer>.Continuation
     ) {
         let muted = _muted
         let level = _audioLevel
@@ -359,7 +359,7 @@ public final class MicCapture: @unchecked Sendable {
                 )
             }
             guard !muted.value else { return }
-            continuation.yield(buffer)
+            continuation.yield(CapturedBuffer(buffer: buffer, generation: generation))
         }
         hasTapInstalled = true
     }

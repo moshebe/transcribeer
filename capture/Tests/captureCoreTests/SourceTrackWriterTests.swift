@@ -64,7 +64,7 @@ struct SourceTrackWriterTests {
         #expect(abs(samples.count - 96_000) < 200)
     }
 
-    @Test("After a discontinuity the wall-clock gap is filled with silence")
+    @Test("At a new capture generation the wall-clock gap is filled with silence")
     func padsGapAfterDiscontinuity() throws {
         let url = tempCAF()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -73,9 +73,12 @@ struct SourceTrackWriterTests {
 
         // 0.1 s buffer, capture rebuilt, next 0.1 s buffer arrives 2.1 s later:
         // 2 s of audio are missing.
-        writer.write(try tone(frames: 4_800, sampleRate: 48_000), at: start)
-        writer.markDiscontinuity()
-        writer.write(try tone(frames: 4_800, sampleRate: 48_000), at: start.addingTimeInterval(2.1))
+        writer.write(try tone(frames: 4_800, sampleRate: 48_000), at: start, generation: 1)
+        writer.write(
+            try tone(frames: 4_800, sampleRate: 48_000),
+            at: start.addingTimeInterval(2.1),
+            generation: 2
+        )
         writer.close()
 
         let (_, samples) = try readFile(url)
@@ -84,7 +87,7 @@ struct SourceTrackWriterTests {
         #expect(samples.last == 0.5)
     }
 
-    @Test("Without a discontinuity, late buffers are not padded")
+    @Test("Within one capture generation, late buffers are not padded")
     func noPaddingWithoutDiscontinuity() throws {
         let url = tempCAF()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -105,29 +108,29 @@ struct SourceTrackWriterTests {
         let writer = SourceTrackWriter(url: url)
         let start = Date()
 
-        writer.write(try tone(frames: 480, sampleRate: 48_000), at: start)
-        writer.markDiscontinuity()
-        writer.write(try tone(frames: 480, sampleRate: 48_000), at: start.addingTimeInterval(3_600))
+        writer.write(try tone(frames: 480, sampleRate: 48_000), at: start, generation: 1)
+        writer.write(try tone(frames: 480, sampleRate: 48_000), at: start.addingTimeInterval(3_600), generation: 2)
         writer.close()
 
         let padded = Int(SourceTrackWriter.maxPaddingSeconds * 48_000)
         #expect(try readFile(url).samples.count == 480 + padded + 480)
     }
 
-    @Test("Frames written include padding, keeping the effective rate honest")
-    func framesWrittenIncludePadding() throws {
+    @Test("Old-generation buffers still queued don't consume the gap padding")
+    func queuedOldBuffersDontConsumePadding() throws {
         let url = tempCAF()
         defer { try? FileManager.default.removeItem(at: url) }
         let writer = SourceTrackWriter(url: url)
         let start = Date()
 
-        writer.write(try tone(frames: 48_000, sampleRate: 48_000), at: start.addingTimeInterval(1))
-        writer.markDiscontinuity()
-        writer.write(try tone(frames: 48_000, sampleRate: 48_000), at: start.addingTimeInterval(4))
+        // Two old-capture buffers drain after the rebuild started, then the
+        // new capture's first buffer arrives 3 s later.
+        writer.write(try tone(frames: 4_800, sampleRate: 48_000), at: start, generation: 1)
+        writer.write(try tone(frames: 4_800, sampleRate: 48_000), at: start.addingTimeInterval(0.1), generation: 1)
+        writer.write(try tone(frames: 4_800, sampleRate: 48_000), at: start.addingTimeInterval(3.2), generation: 2)
         writer.close()
 
-        // 1 s + 2 s gap + 1 s over 3 s of wall clock between first and last buffer.
-        #expect(writer.framesWritten == 4 * 48_000)
-        #expect(writer.fileSampleRate == 48_000)
+        #expect(writer.paddedFrames == 3 * 48_000)
+        #expect(abs(writer.gapSeconds - 3) < 0.001)
     }
 }

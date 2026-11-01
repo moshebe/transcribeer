@@ -13,11 +13,11 @@ private let logger = Logger(subsystem: "com.transcribeer", category: "SourceTrac
 /// differs from the file's, so later buffers are converted to the file format
 /// instead of being dropped.
 ///
-/// Rebuilding the capture also leaves a hole in the stream. After
-/// `markDiscontinuity()`, the next buffer is preceded by silence covering the
+/// Rebuilding the capture also leaves a hole in the stream. The first buffer
+/// from a new capture generation is preceded by silence covering the
 /// wall-clock gap, so the source stays aligned with the other one in the mix.
-/// Padding only happens after an explicit discontinuity: normal delivery
-/// jitter and device clock drift are left to `AudioMixer`.
+/// Padding only happens at a generation change: normal delivery jitter and
+/// device clock drift are left to `AudioMixer`.
 final class SourceTrackWriter {
     private let url: URL
     private var file: AVAudioFile?
@@ -31,8 +31,13 @@ final class SourceTrackWriter {
     private(set) var framesWritten: Int64 = 0
     /// Wall-clock time the last buffer arrived.
     private(set) var lastWriteDate: Date?
+    /// Silence frames inserted for rebuild gaps.
+    private(set) var paddedFrames: Int64 = 0
+    /// Wall-clock length of the rebuild gaps (uncapped), so the device's
+    /// effective rate can be measured over captured audio only.
+    private(set) var gapSeconds: Double = 0
 
-    private var pendingDiscontinuity = false
+    private var lastGeneration: Int?
 
     /// Longest gap filled with silence. A longer one (e.g. the Mac slept)
     /// is capped so a bad clock reading can't write hours of silence.
@@ -42,13 +47,9 @@ final class SourceTrackWriter {
         self.url = url
     }
 
-    /// Note that the capture was rebuilt, so the next buffer follows a gap.
-    func markDiscontinuity() {
-        pendingDiscontinuity = true
-    }
-
-    /// Append `buffer`, received at `date`. Multi-channel input is downmixed.
-    func write(_ buffer: AVAudioPCMBuffer, at date: Date) {
+    /// Append `buffer`, received at `date` from capture `generation`.
+    /// Multi-channel input is downmixed.
+    func write(_ buffer: AVAudioPCMBuffer, at date: Date, generation: Int = 0) {
         guard buffer.frameLength > 0 else { return }
         let mono = buffer.format.channelCount > 1 ? (Self.downmixToMono(buffer) ?? buffer) : buffer
 
@@ -57,10 +58,10 @@ final class SourceTrackWriter {
         }
         guard let file, let output = convertToFileFormat(mono) else { return }
 
-        if pendingDiscontinuity {
-            pendingDiscontinuity = false
+        if let lastGeneration, lastGeneration != generation {
             padGap(before: output, arrivingAt: date, file: file)
         }
+        lastGeneration = generation
 
         do {
             try file.write(from: output)
@@ -108,9 +109,10 @@ final class SourceTrackWriter {
     private func padGap(before buffer: AVAudioPCMBuffer, arrivingAt date: Date, file: AVAudioFile) {
         guard let lastWriteDate else { return }
         let bufferSeconds = Double(buffer.frameLength) / fileSampleRate
-        let gap = date.timeIntervalSince(lastWriteDate) - bufferSeconds
+        let gap = max(0, date.timeIntervalSince(lastWriteDate) - bufferSeconds)
+        gapSeconds += gap
         let seconds = min(gap, Self.maxPaddingSeconds)
-        let frames = AVAudioFrameCount(max(0, seconds * fileSampleRate))
+        let frames = AVAudioFrameCount(seconds * fileSampleRate)
         guard frames > 0,
               let silence = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames)
         else { return }
@@ -122,6 +124,7 @@ final class SourceTrackWriter {
         do {
             try file.write(from: silence)
             framesWritten += Int64(frames)
+            paddedFrames += Int64(frames)
             logger.info(
                 """
                 padded gap file=\(self.url.lastPathComponent, privacy: .public) \

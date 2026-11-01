@@ -26,7 +26,7 @@ public final class SystemAudioCapture: @unchecked Sendable {
         uncheckedState: nil
     )
     private let _sysContinuation = OSAllocatedUnfairLock<
-        AsyncStream<AVAudioPCMBuffer>.Continuation?
+        AsyncStream<CapturedBuffer>.Continuation?
     >(uncheckedState: nil)
     private let callbackQueue = DispatchQueue(
         label: "com.transcribeer.system-audio",
@@ -44,14 +44,17 @@ public final class SystemAudioCapture: @unchecked Sendable {
 
     private static let restartDebounce: DispatchTimeInterval = .milliseconds(300)
     private static let restartRetryDelay: DispatchTimeInterval = .seconds(1)
-    private static let maxRestartAttempts = 15
+    private static let fastRestartAttempts = 15
+    private static let slowRestartRetryDelay: DispatchTimeInterval = .seconds(5)
 
-    /// Called (on an internal queue) right before the tap is rebuilt after a
-    /// route change, so the writer can account for the gap.
-    public var onReconfigure: (@Sendable () -> Void)?
+    /// Incremented for every tap build; stamped on each buffer.
+    private var generation = 0
+    /// Set as soon as the tap's format changes: until the tap is rebuilt, the
+    /// IO proc would label new-rate audio with the old rate.
+    private let _dropBuffers = SyncBool()
 
     public struct CaptureStreams {
-        public let systemAudio: AsyncStream<AVAudioPCMBuffer>
+        public let systemAudio: AsyncStream<CapturedBuffer>
     }
 
     public func bufferStream(
@@ -59,7 +62,7 @@ public final class SystemAudioCapture: @unchecked Sendable {
     ) async throws -> CaptureStreams {
         await stop()
 
-        let sysStream = AsyncStream<AVAudioPCMBuffer> { continuation in
+        let sysStream = AsyncStream<CapturedBuffer> { continuation in
             self._sysContinuation.withLock { $0 = continuation }
         }
 
@@ -99,7 +102,11 @@ public final class SystemAudioCapture: @unchecked Sendable {
         let ioProcID: AudioDeviceIOProcID
         do {
             format = try resolveTapFormat(tapID: tapID)
-            ioProcID = try registerIOProc(aggregateDeviceID: aggregateDeviceID, format: format)
+            ioProcID = try registerIOProc(
+                aggregateDeviceID: aggregateDeviceID,
+                format: format,
+                generation: generation + 1
+            )
         } catch {
             _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
             _ = AudioHardwareDestroyProcessTap(tapID)
@@ -117,6 +124,8 @@ public final class SystemAudioCapture: @unchecked Sendable {
         _tapID.withLock { $0 = tapID }
         _aggregateDeviceID.withLock { $0 = aggregateDeviceID }
         _ioProcID.withLock { $0 = ioProcID }
+        generation += 1
+        _dropBuffers.value = false
         activeRoute = (outputDevice, format.sampleRate)
         logger.info(
             """
@@ -208,7 +217,8 @@ public final class SystemAudioCapture: @unchecked Sendable {
 
     private func registerIOProc(
         aggregateDeviceID: AudioObjectID,
-        format: AVAudioFormat
+        format: AVAudioFormat,
+        generation: Int
     ) throws -> AudioDeviceIOProcID {
         var ioProcID: AudioDeviceIOProcID?
         let status = AudioDeviceCreateIOProcIDWithBlock(
@@ -216,7 +226,7 @@ public final class SystemAudioCapture: @unchecked Sendable {
             aggregateDeviceID,
             callbackQueue
         ) { [weak self] _, inInputData, _, _, _ in
-            self?.handleInputData(inInputData, format: format)
+            self?.handleInputData(inInputData, format: format, generation: generation)
         }
         guard status == noErr, let ioProcID else {
             throw CaptureError.ioProcCreationFailed(status)
@@ -274,8 +284,10 @@ public final class SystemAudioCapture: @unchecked Sendable {
 
     private func handleInputData(
         _ inputData: UnsafePointer<AudioBufferList>,
-        format: AVAudioFormat
+        format: AVAudioFormat,
+        generation: Int
     ) {
+        guard !_dropBuffers.value else { return }
         let sourceBuffers = UnsafeMutableAudioBufferListPointer(
             UnsafeMutablePointer(mutating: inputData)
         )
@@ -321,7 +333,8 @@ public final class SystemAudioCapture: @unchecked Sendable {
             _audioLevel.value = min(rms * 25, 1.0)
         }
 
-        _ = _sysContinuation.withLock { $0?.yield(pcmBuffer) }
+        let captured = CapturedBuffer(buffer: pcmBuffer, generation: generation)
+        _ = _sysContinuation.withLock { $0?.yield(captured) }
     }
 
     // MARK: - Static helpers
@@ -479,7 +492,10 @@ extension SystemAudioCapture {
         var listeners: [AudioPropertyListener?] = [
             AudioPropertyListener(
                 objectID: tapID, selector: kAudioTapPropertyFormat, queue: controlQueue
-            ) { [weak self] in self?.scheduleRestart(reason: "tap format changed") },
+            ) { [weak self] in
+                self?._dropBuffers.value = true
+                self?.scheduleRestart(reason: "tap format changed")
+            },
             AudioPropertyListener(
                 objectID: outputDevice, selector: kAudioDevicePropertyDeviceIsAlive, queue: controlQueue
             ) { [weak self] in self?.scheduleRestart(reason: "output device gone") },
@@ -509,21 +525,24 @@ extension SystemAudioCapture {
     private func restart(reason: String, attempt: Int) {
         guard _sysContinuation.withLock({ $0 != nil }) else { return }
         if attempt == 1, routeIsUnchanged() {
+            _dropBuffers.value = false
             logger.debug("tap restart skipped, route unchanged reason=\(reason, privacy: .public)")
             return
         }
         logger.info("tap restart reason=\(reason, privacy: .public) attempt=\(attempt, privacy: .public)")
+        // Remove listeners while their objects still exist.
+        routeListeners.forEach { $0.invalidate() }
+        routeListeners = []
         teardownTap()
-        onReconfigure?()
         do {
             try startTap()
         } catch {
-            guard attempt < Self.maxRestartAttempts else {
-                logger.error("tap restart gave up: \(error.localizedDescription, privacy: .public)")
-                return
-            }
+            logger.error(
+                "tap restart failed attempt=\(attempt, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            let delay = attempt < Self.fastRestartAttempts ? Self.restartRetryDelay : Self.slowRestartRetryDelay
             let generation = restartGeneration
-            controlQueue.asyncAfter(deadline: .now() + Self.restartRetryDelay) { [self] in
+            controlQueue.asyncAfter(deadline: .now() + delay) { [self] in
                 guard generation == restartGeneration else { return }
                 restart(reason: reason, attempt: attempt + 1)
             }
