@@ -1,8 +1,7 @@
 import SwiftUI
 
 /// A compact, non-dismissable status banner that appears when `ResourceGovernor`
-/// reports a degraded operating state (thermal pressure, low power, or recent
-/// memory pressure).
+/// reports thermal pressure or Low Power Mode.
 ///
 /// Automatically disappears when the condition clears — no dismiss button needed.
 struct ResourceStatusBanner: View {
@@ -41,12 +40,6 @@ struct ResourceStatusBanner: View {
 
         if governor.isLowPowerMode {
             return "Reduced performance — Low Power Mode is on."
-        }
-
-        // Recent memory pressure (within 60 s) counts as degraded.
-        if let event = governor.lastMemoryPressureEvent,
-           Date().timeIntervalSince(event) <= 60 {
-            return "Reduced performance — memory low."
         }
 
         return nil

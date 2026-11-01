@@ -48,8 +48,12 @@ enum ZoomTitleReader {
 
     /// Attempt to read the Zoom meeting topic. Returns `nil` if Zoom is not running,
     /// AX is not granted, no meeting window is open, or the meeting has no set topic.
-    @MainActor
-    static func meetingTitle() -> String? {
+    static func meetingTitle() async -> String? {
+        await Task.detached(priority: .utility) { readMeetingTitle() }.value
+    }
+
+    private static func readMeetingTitle() -> String? {
+        assert(!Thread.isMainThread)
         if !AXIsProcessTrusted() {
             logger.info("AX not trusted — cannot read zoom title")
             return nil
@@ -100,7 +104,6 @@ enum ZoomTitleReader {
     /// Find the first `AXButton` descendant of `window` whose attributes parse
     /// as a meeting topic. For buttons whose `AXIdentifier` matches a known
     /// meeting-info button, description is consulted when title is absent.
-    @MainActor
     private static func titleFromInfoButton(in window: AXUIElement) -> String? {
         var queue: [(AXUIElement, Int)] = [(window, 0)]
         var buttonCount = 0

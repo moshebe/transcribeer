@@ -446,7 +446,7 @@ struct TranscribeerApp: App {
         runner.stopRecording()
     }
 
-    private func startRecording(autoStarted: Bool) {
+    private func startRecording(autoStarted: Bool, title: String? = nil) {
         NotificationManager.cancelMeetingNotification()
         if !autoStarted {
             cancelAutoRecordCountdown()
@@ -454,7 +454,7 @@ struct TranscribeerApp: App {
         runner.meetingAutoStartContext = autoStarted
             ? PipelineRunner.MeetingAutoStartContext(
                 appName: meetingDetector.detectedApp?.name ?? "unknown",
-                title: meetingTitle(),
+                title: title,
                 delaySeconds: max(0, config.meetingAutoRecordDelay),
             )
             : nil
@@ -462,7 +462,6 @@ struct TranscribeerApp: App {
 
         if autoStarted {
             notifyMeetingAutoRecord()
-            prefillMeetingTitle()
         }
     }
 
@@ -470,24 +469,27 @@ struct TranscribeerApp: App {
     /// its AX topic; other apps return `nil` until dedicated enrichers land.
     /// Returns `nil` immediately when the user has disabled the Zoom enricher
     /// in Settings so no AX walk is performed.
-    private func meetingTitle() -> String? {
+    private func meetingTitle() async -> String? {
         guard config.zoomEnricherEnabled,
               meetingDetector.detectedApp?.bundleID == "us.zoom.xos"
         else { return nil }
-        return ZoomTitleReader.meetingTitle()
+        return await ZoomTitleReader.meetingTitle()
     }
 
     /// Send a notification announcing auto-record has started.
     /// Briefly waits (up to ~2s) for an enriched meeting title to populate before posting.
     private func notifyMeetingAutoRecord() {
+        let session = runner.currentSession
+        let appName = runner.meetingAutoStartContext?.appName
         Task { @MainActor in
             for _ in 0..<10 {
-                if meetingTitle() != nil { break }
+                if runner.liveMeetingTitle != nil { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
+            guard runner.currentSession == session, runner.state.isRecording else { return }
             NotificationManager.notifyMeetingAutoRecordStarted(
-                appName: meetingDetector.detectedApp?.name,
-                title: meetingTitle(),
+                appName: appName,
+                title: runner.liveMeetingTitle,
             )
         }
     }
@@ -497,26 +499,20 @@ struct TranscribeerApp: App {
     private func scheduleAutoRecord() {
         let delay = max(0, config.meetingAutoRecordDelay)
         logger.info("scheduleAutoRecord delay=\(delay, privacy: .public)s app=\(self.meetingDetector.detectedApp?.name ?? "-", privacy: .public)")
-        if delay == 0 {
-            startRecording(autoStarted: true)
-            return
-        }
-
         let countdown = AutoRecordCountdown(secondsRemaining: delay)
         autoRecordCountdown = countdown
 
         let appName = meetingDetector.detectedApp?.name
-        let title = meetingTitle()
-        NotificationManager.showMeetingCountdown(secondsRemaining: delay, appName: appName, title: title)
-
         countdown.task = Task { @MainActor in
+            let title = await meetingTitle()
+            guard !Task.isCancelled, autoRecordCountdown === countdown else { return }
             var remaining = delay
             while remaining > 0 {
                 autoRecordCountdown?.secondsRemaining = remaining
                 NotificationManager.showMeetingCountdown(
                     secondsRemaining: remaining,
                     appName: meetingDetector.detectedApp?.name ?? appName,
-                    title: meetingTitle() ?? title,
+                    title: title,
                 )
                 do {
                     try await Task.sleep(for: .seconds(1))
@@ -530,7 +526,7 @@ struct TranscribeerApp: App {
             autoRecordCountdown = nil
             NotificationManager.cancelMeetingCountdown()
             guard meetingDetector.inMeeting, !runner.state.isBusy else { return }
-            startRecording(autoStarted: true)
+            startRecording(autoStarted: true, title: title)
         }
     }
 
@@ -538,21 +534,6 @@ struct TranscribeerApp: App {
         autoRecordCountdown?.task?.cancel()
         autoRecordCountdown = nil
         NotificationManager.cancelMeetingCountdown()
-    }
-
-    /// After a short delay, read the meeting title and set it as the session name.
-    private func prefillMeetingTitle() {
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            guard let session = runner.currentSession else { return }
-            // Don't overwrite if already named.
-            let meta = SessionManager.readMeta(session)
-            if let name = meta["name"] as? String, !name.isEmpty { return }
-
-            if let title = meetingTitle() {
-                SessionManager.setName(session, title)
-            }
-        }
     }
 }
 

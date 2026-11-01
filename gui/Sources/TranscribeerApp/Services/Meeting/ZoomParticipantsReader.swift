@@ -88,9 +88,9 @@ enum ZoomParticipantsReader {
         let snapshot: Snapshot?
     }
 
-    /// Probe Zoom's AX tree once. Cheap enough to call on a 1–2 s poll.
-    @MainActor
+    /// Blocking AX lookup; callers must run this off the main thread.
     static func lookup(now: () -> Date = Date.init) -> LookupResult {
+        assert(!Thread.isMainThread)
         if !AXIsProcessTrusted() {
             logger.info("AX not trusted — cannot read zoom participants")
             return LookupResult(state: .axError("not-trusted"), snapshot: nil)

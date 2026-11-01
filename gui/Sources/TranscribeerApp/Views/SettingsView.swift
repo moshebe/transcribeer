@@ -119,7 +119,7 @@ struct SettingsView: View {
                 Text("Meeting Integration")
             } footer: {
                 Text("Start/stop recording automatically when a meeting starts/ends. "
-                    + "Detected from microphone + camera activity paired with a known meeting app. "
+                    + "Starts after microphone activity and a known meeting app are detected. "
                     + "A notification with a cancel button appears during the countdown.")
                     .foregroundStyle(.secondary)
             }

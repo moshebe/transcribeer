@@ -82,8 +82,7 @@ final class PipelineRunner {
 
     /// Latest Zoom meeting topic observed while recording. `nil` when not
     /// recording, the enricher is disabled, or Zoom has no detectable topic.
-    /// Refreshed every ~2 s by `titlePollTask` so the UI reflects topic edits
-    /// that land mid-call.
+    /// Read in the background until Zoom exposes a title for this recording.
     private(set) var liveMeetingTitle: String?
 
     // MARK: - Track 4.3: Post-recording prompt
@@ -165,8 +164,7 @@ final class PipelineRunner {
         stopTitlePolling()
     }
 
-    /// Poll the Zoom AX topic every 2 s while recording so the UI reflects
-    /// late-arriving topics and mid-call edits. No-op when the Zoom enricher
+    /// Poll the Zoom AX topic every 2 s until a title is found. No-op when the Zoom enricher
     /// is disabled — same contract as `startParticipantsCapture`.
     ///
     /// Once a non-nil title is observed it is sticky for the rest of the
@@ -175,15 +173,29 @@ final class PipelineRunner {
     private func startTitlePolling(config: AppConfig) {
         guard config.zoomEnricherEnabled else { return }
         titlePollTask?.cancel()
+        if let title = meetingAutoStartContext?.title {
+            applyMeetingTitle(title)
+            return
+        }
         titlePollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                if let title = ZoomTitleReader.meetingTitle() {
-                    self?.liveMeetingTitle = title
+                let title = await ZoomTitleReader.meetingTitle()
+                guard !Task.isCancelled else { return }
+                if let title {
+                    self?.applyMeetingTitle(title)
                     return
                 }
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    func applyMeetingTitle(_ title: String) {
+        liveMeetingTitle = title
+        guard meetingAutoStarted, let session = currentSession else { return }
+        let name = SessionManager.readMeta(session)["name"] as? String
+        guard name?.isEmpty != false else { return }
+        SessionManager.setName(session, title)
     }
 
     private func stopTitlePolling() {

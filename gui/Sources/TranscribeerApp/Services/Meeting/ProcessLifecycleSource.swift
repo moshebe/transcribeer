@@ -20,7 +20,7 @@ protocol ProcessLifecycleSource: Sendable {
     /// Snapshot of currently running applications, keyed by bundle ID. Used by
     /// `MeetingDetector.scanForMeetingApp` so the full flow can be driven from
     /// a single injectable source in tests.
-    func runningSnapshot() -> [RunningAppSnapshot]
+    func runningSnapshot() async -> [RunningAppSnapshot]
 }
 
 /// Minimal info we need from a running application — bundle ID plus the user-
@@ -59,8 +59,13 @@ final class NSWorkspaceProcessLifecycleSource: ProcessLifecycleSource, @unchecke
         continuation.finish()
     }
 
-    func runningSnapshot() -> [RunningAppSnapshot] {
-        NSWorkspace.shared.runningApplications.compactMap { app in
+    func runningSnapshot() async -> [RunningAppSnapshot] {
+        await Task.detached(priority: .utility) { self.readRunningSnapshot() }.value
+    }
+
+    private func readRunningSnapshot() -> [RunningAppSnapshot] {
+        assert(!Thread.isMainThread)
+        return NSWorkspace.shared.runningApplications.compactMap { app in
             guard let bundleID = app.bundleIdentifier else { return nil }
             return RunningAppSnapshot(bundleID: bundleID, localizedName: app.localizedName)
         }
