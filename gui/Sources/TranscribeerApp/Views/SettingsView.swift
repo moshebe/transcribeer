@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var apiKey: String = ""
     @State private var transcriptionAPIKey: String = ""
     @State private var saveTask: Task<Void, Never>?
+    @State private var ollamaModels: [String] = []
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -251,6 +252,9 @@ struct SettingsView: View {
                     get: { LLMBackend.from(config.llmBackend) },
                     set: { newBackend in
                         config.llmBackend = newBackend.rawValue
+                        config.llmModel = SummarizationCatalog.models(
+                            for: newBackend, ollamaModels: ollamaModels
+                        ).first ?? AppConfig().llmModel
                         apiKey = KeychainHelper.getAPIKey(backend: newBackend.rawValue) ?? ""
                         save()
                     }
@@ -260,11 +264,14 @@ struct SettingsView: View {
                     }
                 }
 
-                TextField("Model", text: Binding(
-                    get: { config.llmModel },
-                    set: { config.llmModel = $0; scheduleSave() }
-                ))
-                .onSubmit { saveTask?.cancel(); save() }
+                ModelSelectionField(
+                    selection: Binding(
+                        get: { config.llmModel },
+                        set: { config.llmModel = $0; scheduleSave() }
+                    ),
+                    models: SummarizationCatalog.models(for: backend, ollamaModels: ollamaModels),
+                    onSubmit: { saveTask?.cancel(); save() }
+                )
 
                 authFields(for: backend)
             } header: {
@@ -273,6 +280,11 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, 8)
+        .task(id: config.ollamaHost) {
+            let models = await SummarizationCatalog.fetchOllamaModels(host: config.ollamaHost)
+            guard !Task.isCancelled else { return }
+            ollamaModels = models
+        }
     }
 
     @ViewBuilder

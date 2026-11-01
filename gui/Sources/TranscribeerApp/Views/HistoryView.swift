@@ -138,15 +138,13 @@ struct HistoryView: View {
                 DevBadge()
             }
         }
-        ToolbarItem(placement: .primaryAction) {
-            primaryActionButton
-        }
         ToolbarItemGroup(placement: .primaryAction) {
+            toolbarStateLabel
+                .labelStyle(.titleAndIcon)
+                .lineLimit(1)
+            primaryActionButton
             importButton
             settingsButton
-        }
-        ToolbarItem(placement: .status) {
-            toolbarStateLabel
         }
     }
 
@@ -339,7 +337,6 @@ struct HistoryView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
-            .controlSize(.large)
             .keyboardShortcut("r", modifiers: .command)
             .help("Start recording (⌘R)")
         case .recording:
@@ -349,7 +346,6 @@ struct HistoryView: View {
                 Label("Stop", systemImage: "stop.fill")
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.large)
             .keyboardShortcut(".", modifiers: .command)
             .help("Stop recording (⌘.)")
         case .transcribing, .summarizing:
@@ -359,7 +355,6 @@ struct HistoryView: View {
                 Label("Cancel", systemImage: "xmark.circle")
             }
             .buttonStyle(.bordered)
-            .controlSize(.large)
             .keyboardShortcut(".", modifiers: .command)
             .help("Cancel (⌘.)")
         case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation:
@@ -395,7 +390,7 @@ struct HistoryView: View {
                 }
             }
         }
-        .searchable(text: $searchText, prompt: "Search sessions…")
+        .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions…")
         .navigationTitle("Transcribeer")
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 380)
         .onDeleteCommand {
@@ -655,7 +650,8 @@ struct HistoryView: View {
         let overrides = PipelineRunner.SummarizeOverrides(
             backend: request.backend,
             model: request.model,
-            focus: request.focus
+            focus: request.focus,
+            language: request.language
         )
         Task {
             let result = await runner.summarizeSession(

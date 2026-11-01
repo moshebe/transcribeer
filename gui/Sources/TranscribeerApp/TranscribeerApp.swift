@@ -116,6 +116,7 @@ struct TranscribeerApp: App {
         Window("Recording History", id: "history") {
             HistoryView(config: $config, runner: runner)
         }
+        .windowToolbarStyle(.unifiedCompact)
         .defaultSize(width: 900, height: 600)
 
         Window("Setup", id: "onboarding") {

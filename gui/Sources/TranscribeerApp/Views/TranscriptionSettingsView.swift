@@ -316,8 +316,13 @@ struct TranscriptionSettingsView: View {
     @ViewBuilder
     private var cloudSection: some View {
         Section {
-            TextField("Model", text: cloudModelBinding)
-                .onSubmit { saveTask?.cancel(); save() }
+            ModelSelectionField(
+                selection: cloudModelBinding,
+                models: backend == .openai
+                    ? ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]
+                    : SummarizationCatalog.geminiModels,
+                onSubmit: { saveTask?.cancel(); save() }
+            )
             SecureField("API key", text: $apiKey)
                 .onSubmit {
                     guard !apiKey.isEmpty else { return }
@@ -360,13 +365,12 @@ struct TranscriptionSettingsView: View {
         case .whisperkit, .speechAnalyzer:
             return ""
         case .openai:
-            return "`whisper-1` is the only OpenAI audio model that returns segment-level "
-                + "timestamps. `gpt-4o-transcribe` works but falls back to one segment per chunk. "
-                + "Long files are split into 10-min chunks."
+            return "gpt-transcribe is the current transcription model. It returns one segment per chunk. "
+                + "The older whisper-1 model provides segment timestamps. "
+                + "Long files are split into 10-minute chunks."
         case .gemini:
             return "Use a Google AI Studio key. Audio is sent inline; long recordings are split "
-                + "into 10-min chunks. Defaults to gemini-2.5-flash; gemini-2.5-pro works too "
-                + "but is slower."
+                + "into 10-minute chunks. Choose a model from the menu or enter a custom model name."
         }
     }
 

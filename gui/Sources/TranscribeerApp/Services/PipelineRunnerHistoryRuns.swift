@@ -120,6 +120,7 @@ extension PipelineRunner {
         var backend: String?
         var model: String?
         var focus: String?
+        var language: TranscriptionLanguage?
     }
 
     /// Re-summarize a session from its transcript.
@@ -152,7 +153,9 @@ extension PipelineRunner {
             do {
                 let transcript = try String(contentsOf: txPath, encoding: .utf8)
                 let basePrompt = SummarizationService.loadPromptProfile(profile)
-                let prompt = Self.composePrompt(base: basePrompt, focus: overrides.focus)
+                let prompt = Self.composePrompt(
+                    base: basePrompt, focus: overrides.focus, language: overrides.language
+                )
                 _ = try await self.streamSummary(
                     session: session,
                     transcript: transcript,
@@ -199,12 +202,20 @@ extension PipelineRunner {
     /// Combine the profile prompt (or the built-in default) with an optional
     /// free-form focus instruction. Returns `nil` when there's nothing to
     /// override — the service will fall back to `defaultPrompt`.
-    static func composePrompt(base: String?, focus: String?) -> String? {
+    static func composePrompt(
+        base: String?, focus: String?, language: TranscriptionLanguage? = nil
+    ) -> String? {
+        var prompt = base
         let trimmedFocus = focus?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmedFocus, !trimmedFocus.isEmpty {
             let root = base ?? SummarizationService.defaultPrompt
-            return root + "\n\nAdditional instructions from the user:\n" + trimmedFocus
+            prompt = root + "\n\nAdditional instructions from the user:\n" + trimmedFocus
         }
-        return base
+        if let language, language != .auto {
+            let root = prompt ?? SummarizationService.defaultPrompt
+            prompt = root + "\n\nOutput language: Write the summary in \(language.displayName). "
+                + "This overrides any earlier language instruction."
+        }
+        return prompt
     }
 }

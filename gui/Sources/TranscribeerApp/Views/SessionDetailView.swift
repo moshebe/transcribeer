@@ -28,6 +28,7 @@ struct SessionDetailView: View {
         var backend: String?
         var model: String?
         var focus: String?
+        var language: TranscriptionLanguage?
     }
 
     /// Per-call overrides for re-transcribe. `nil` means "use the app-wide
@@ -46,6 +47,7 @@ struct SessionDetailView: View {
     @State private var summaryFocus: String = ""
     @State private var summaryModelOptions: [SummaryModelOption] = []
     @State private var selectedLanguage: TranscriptionLanguage = .auto
+    @State private var summaryLanguage: TranscriptionLanguage = .auto
     @State private var notesSaveTask: Task<Void, Never>?
     @State private var nameSaveTask: Task<Void, Never>?
     @State private var progressStartedAt: Date?
@@ -98,32 +100,7 @@ struct SessionDetailView: View {
                 )
             }
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Menu {
-                    Button("Export Transcript…", action: exportTranscript)
-                        .disabled(detail.transcript.isEmpty)
-                    Button("Export Summary…", action: exportSummary)
-                        .disabled(detail.summary.isEmpty)
-                    Divider()
-                    Button("Delete Session…", role: .destructive) {
-                        showDeleteConfirm = true
-                    }
-                    .keyboardShortcut(.delete, modifiers: .command)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .help("More actions")
-                .accessibilityLabel("More actions")
-
-                Button(action: onOpenDir) {
-                    Image(systemName: "folder")
-                }
-                .help("Reveal in Finder")
-                .accessibilityLabel("Reveal in Finder")
-            }
-        }
+        .toolbar { sessionToolbar }
         .background {
             Button("Find", action: openFind)
                 .keyboardShortcut("f", modifiers: .command)
@@ -200,6 +177,7 @@ struct SessionDetailView: View {
         notes = detail.notes
         summaryFocus = ""
         selectedSummaryModel = defaultSummaryModel
+        summaryLanguage = .auto
         syncLanguage()
     }
 
@@ -333,7 +311,19 @@ struct SessionDetailView: View {
     @ViewBuilder
     private var contextualAction: some View {
         switch activeTab {
-        case .summary: summaryTabBarAction
+        case .summary:
+            Picker("Summary language", selection: $summaryLanguage) {
+                Text("Same as transcript").tag(TranscriptionLanguage.auto)
+                Text("Hebrew").tag(TranscriptionLanguage.hebrew)
+                Text("English").tag(TranscriptionLanguage.english)
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+            .controlSize(.small)
+            .disabled(isSummarizingThisSession)
+            .help("Output language for the next summary. Click Regenerate to apply.")
+            summaryTabBarAction
         case .transcript:
             RetranscribeMenu(
                 config: config,
@@ -385,6 +375,7 @@ struct SessionDetailView: View {
             backend: selectedSummaryModel?.backend.rawValue,
             model: selectedSummaryModel?.model,
             focus: summaryFocus.trimmingCharacters(in: .whitespacesAndNewlines),
+            language: summaryLanguage,
         ))
     }
 
@@ -694,6 +685,36 @@ private struct SessionStatusToast: View {
             .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
             .padding(.bottom, 20)
             .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+}
+
+private extension SessionDetailView {
+    @ToolbarContentBuilder
+    var sessionToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                Button("Export Transcript…", action: exportTranscript)
+                    .disabled(detail.transcript.isEmpty)
+                Button("Export Summary…", action: exportSummary)
+                    .disabled(detail.summary.isEmpty)
+                Divider()
+                Button("Delete Session…", role: .destructive) {
+                    showDeleteConfirm = true
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuIndicator(.hidden)
+            .help("More actions")
+            .accessibilityLabel("More actions")
+
+            Button(action: onOpenDir) {
+                Image(systemName: "folder")
+            }
+            .help("Reveal in Finder")
+            .accessibilityLabel("Reveal in Finder")
         }
     }
 }
