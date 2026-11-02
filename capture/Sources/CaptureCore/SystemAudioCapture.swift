@@ -39,7 +39,7 @@ public final class SystemAudioCapture: @unchecked Sendable {
     private var routeListeners: [AudioPropertyListener] = []
     /// What the running tap was built for, to ignore notifications that
     /// don't actually change the route.
-    private var activeRoute: (device: AudioDeviceID, sampleRate: Double)?
+    private var activeRoute: (device: AudioDeviceID, sampleRate: Double, deviceRate: Double)?
     private var restartGeneration = 0
 
     private static let restartDebounce: DispatchTimeInterval = .milliseconds(300)
@@ -101,7 +101,7 @@ public final class SystemAudioCapture: @unchecked Sendable {
         let format: AVAudioFormat
         let ioProcID: AudioDeviceIOProcID
         do {
-            format = try resolveTapFormat(tapID: tapID)
+            format = try resolveTapFormat(tapID: tapID, aggregateDeviceID: aggregateDeviceID)
             ioProcID = try registerIOProc(
                 aggregateDeviceID: aggregateDeviceID,
                 format: format,
@@ -126,7 +126,7 @@ public final class SystemAudioCapture: @unchecked Sendable {
         _ioProcID.withLock { $0 = ioProcID }
         generation += 1
         _dropBuffers.value = false
-        activeRoute = (outputDevice, format.sampleRate)
+        activeRoute = (outputDevice, format.sampleRate, Self.nominalSampleRate(of: outputDevice))
         logger.info(
             """
             tap started device=\(outputDevice, privacy: .public) \
@@ -205,14 +205,6 @@ public final class SystemAudioCapture: @unchecked Sendable {
             throw CaptureError.aggregateDeviceCreationFailed(status)
         }
         return aggregateDeviceID
-    }
-
-    private func resolveTapFormat(tapID: AudioObjectID) throws -> AVAudioFormat {
-        var streamDescription = try Self.tapStreamDescription(for: tapID)
-        guard let format = AVAudioFormat(streamDescription: &streamDescription) else {
-            throw CaptureError.invalidTapFormat
-        }
-        return format
     }
 
     private func registerIOProc(
@@ -496,6 +488,15 @@ extension SystemAudioCapture {
                 self?._dropBuffers.value = true
                 self?.scheduleRestart(reason: "tap format changed")
             },
+            // Bluetooth headsets switch rate when a call opens the mic
+            // (A2DP 48 kHz → hands-free 16/24 kHz). The tap's own format
+            // doesn't notify, so watch the device.
+            AudioPropertyListener(
+                objectID: outputDevice, selector: kAudioDevicePropertyNominalSampleRate, queue: controlQueue
+            ) { [weak self] in
+                self?._dropBuffers.value = true
+                self?.scheduleRestart(reason: "output sample rate changed")
+            },
             AudioPropertyListener(
                 objectID: outputDevice, selector: kAudioDevicePropertyDeviceIsAlive, queue: controlQueue
             ) { [weak self] in self?.scheduleRestart(reason: "output device gone") },
@@ -559,5 +560,41 @@ extension SystemAudioCapture {
               let format = try? Self.tapStreamDescription(for: tapID)
         else { return false }
         return format.mSampleRate == activeRoute.sampleRate
+            && Self.nominalSampleRate(of: device) == activeRoute.deviceRate
+    }
+
+    private static func nominalSampleRate(of device: AudioDeviceID) -> Double {
+        var address = propertyAddress(selector: kAudioDevicePropertyNominalSampleRate)
+        var rate = Float64(0)
+        var size = UInt32(MemoryLayout<Float64>.size)
+        AudioObjectGetPropertyData(device, &address, 0, nil, &size, &rate)
+        return rate
+    }
+}
+
+// MARK: - Tap format
+
+extension SystemAudioCapture {
+    /// The tap's format, at the rate audio actually arrives. The tap keeps
+    /// reporting the rate it was first created at, but the aggregate device
+    /// runs at the output device's current rate (e.g. 44.1 kHz, or 16/24 kHz
+    /// for a Bluetooth headset in a call); labelling that audio with the
+    /// tap's rate would pitch-shift and shorten it.
+    private func resolveTapFormat(tapID: AudioObjectID, aggregateDeviceID: AudioObjectID) throws -> AVAudioFormat {
+        var streamDescription = try Self.tapStreamDescription(for: tapID)
+        let deviceRate = Self.nominalSampleRate(of: aggregateDeviceID)
+        if deviceRate > 0, deviceRate != streamDescription.mSampleRate {
+            logger.info(
+                """
+                tap reports \(streamDescription.mSampleRate, privacy: .public) Hz, \
+                device runs at \(deviceRate, privacy: .public) Hz; using the device rate
+                """
+            )
+            streamDescription.mSampleRate = deviceRate
+        }
+        guard let format = AVAudioFormat(streamDescription: &streamDescription) else {
+            throw CaptureError.invalidTapFormat
+        }
+        return format
     }
 }
