@@ -364,6 +364,11 @@ enum SessionManager {
         return order.compactMap { byName[$0] }
     }
 
+    /// Meeting participants observed while `dir` was recorded.
+    static func participants(_ dir: URL) -> [SessionParticipant] {
+        decodeParticipants(readMeta(dir)["participants"])
+    }
+
     private static func decodeParticipants(_ raw: Any?) -> [SessionParticipant] {
         guard let array = raw as? [[String: Any]] else { return [] }
         return array.compactMap(SessionParticipant.init(dict:))

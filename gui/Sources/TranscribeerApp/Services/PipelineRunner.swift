@@ -524,7 +524,10 @@ final class PipelineRunner {
 
         let startedAt = Date()
         let stream = try await SummarizationService.streamSummarize(
-            transcript: transcript,
+            transcript: SummaryContext.userMessage(
+                transcript: transcript,
+                meeting: SummaryContext.meeting(in: session),
+            ),
             backend: config.llmBackend,
             model: config.llmModel,
             ollamaHost: config.ollamaHost,
