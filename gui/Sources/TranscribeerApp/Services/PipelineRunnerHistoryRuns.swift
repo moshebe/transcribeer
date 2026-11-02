@@ -50,14 +50,16 @@ extension PipelineRunner {
             "re-transcribe start lang=\(cfg.language) backend=\(cfg.transcriptionBackend)"
         )
 
-        let previousState = state
-        state = .transcribing
+        // Goes through the processing state so a recording started meanwhile
+        // keeps the UI (and its Stop button).
+        let previousState = processingState
+        setProcessingState(.transcribing)
         transcribingSession = session
         isCancelling = false
         defer {
             transcribingSession = nil
             isCancelling = false
-            if case .transcribing = state { state = previousState }
+            if case .transcribing = processingState { setProcessingState(previousState) }
         }
 
         do {
@@ -142,8 +144,8 @@ extension PipelineRunner {
             "re-summarize: \(txPath.path) backend=\(effectiveConfig.llmBackend) model=\(effectiveConfig.llmModel)"
         )
 
-        let previousState = state
-        state = .summarizing
+        let previousState = processingState
+        setProcessingState(.summarizing)
         isCancelling = false
 
         // Run inside a stored Task so `cancelProcessing` can tear it down
@@ -174,7 +176,7 @@ extension PipelineRunner {
         let result = await work.value
         summarizeTask = nil
         isCancelling = false
-        if case .summarizing = state { state = previousState }
+        if case .summarizing = processingState { setProcessingState(previousState) }
 
         if result.ok, let line = MeetingNotesExporter.exportIfEnabled(session: session, config: config) {
             appendSessionLog(session, line)

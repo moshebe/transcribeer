@@ -166,6 +166,7 @@ struct TranscribeerApp: App {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "pipeline-sheet")
             }
+            recordWhileProcessingItems
 
         case .transcribing:
             if let pct = runner.transcriptionProgress {
@@ -176,6 +177,7 @@ struct TranscribeerApp: App {
             Button("⏹ Stop") {
                 runner.cancelProcessing()
             }
+            recordWhileProcessingItems
 
         case .awaitingLongRecordingConfirmation:
             Text("⏸ Long recording — confirm summarization")
@@ -183,12 +185,14 @@ struct TranscribeerApp: App {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "pipeline-sheet")
             }
+            recordWhileProcessingItems
 
         case .summarizing:
             Text("🤔 Summarizing…")
             Button("⏹ Stop") {
                 runner.cancelProcessing()
             }
+            recordWhileProcessingItems
 
         case .done(let path):
             Text("✓ Done")
@@ -225,6 +229,22 @@ struct TranscribeerApp: App {
 
     @Environment(\.openWindow) private var openWindow
 
+    /// Shown while earlier recordings are processing: how many are still
+    /// waiting, and a way to start the next meeting's recording right away.
+    @ViewBuilder
+    private var recordWhileProcessingItems: some View {
+        if runner.queuedSessionCount > 0 {
+            Text("\(runner.queuedSessionCount) more waiting to process")
+        }
+        Divider()
+        Button(meetingDetector.inMeeting
+            ? "⏺ Record \(meetingDetector.detectedApp?.name ?? "Meeting")"
+            : "Start Recording"
+        ) {
+            startRecording(autoStarted: false)
+        }
+    }
+
     /// Open the pipeline-sheet window when the runner enters a state that
     /// requires user input. The window hosts `PipelineSheetWindow` which
     /// renders the appropriate sheet based on runner state.
@@ -260,7 +280,7 @@ struct TranscribeerApp: App {
         // Wire notification "Start Recording" action → startRecording
         appDelegate.onRecord = { [runner] in
             Task { @MainActor in
-                guard !runner.state.isBusy else { return }
+                guard !runner.state.isRecording else { return }
                 NotificationManager.cancelMeetingNotification()
                 runner.startRecording(config: ConfigManager.load())
             }
@@ -332,7 +352,6 @@ struct TranscribeerApp: App {
     struct MeetingChangeInputs: Equatable {
         let inMeeting: Bool
         let isRecording: Bool
-        let isBusy: Bool
         let autoRecordEnabled: Bool
         let hasCountdown: Bool
         let autoStarted: Bool
@@ -344,7 +363,6 @@ struct TranscribeerApp: App {
         init(
             inMeeting: Bool,
             isRecording: Bool,
-            isBusy: Bool,
             autoRecordEnabled: Bool,
             hasCountdown: Bool,
             autoStarted: Bool,
@@ -352,7 +370,6 @@ struct TranscribeerApp: App {
         ) {
             self.inMeeting = inMeeting
             self.isRecording = isRecording
-            self.isBusy = isBusy
             self.autoRecordEnabled = autoRecordEnabled
             self.hasCountdown = hasCountdown
             self.autoStarted = autoStarted
@@ -369,7 +386,7 @@ struct TranscribeerApp: App {
 
     static func meetingChangeAction(_ inputs: MeetingChangeInputs) -> MeetingChangeAction {
         if inputs.inMeeting {
-            if inputs.autoRecordEnabled, !inputs.isBusy, !inputs.hasCountdown,
+            if inputs.autoRecordEnabled, !inputs.isRecording, !inputs.hasCountdown,
                !inputs.inAutoRecordCooldown {
                 return .scheduleAutoRecord
             }
@@ -399,7 +416,6 @@ struct TranscribeerApp: App {
         let inputs = MeetingChangeInputs(
             inMeeting: inMeeting,
             isRecording: runner.state.isRecording,
-            isBusy: runner.state.isBusy,
             autoRecordEnabled: config.meetingAutoRecord && appAllowed,
             hasCountdown: autoRecordCountdown != nil,
             autoStarted: runner.meetingAutoStarted,
@@ -407,7 +423,7 @@ struct TranscribeerApp: App {
         )
         let action = Self.meetingChangeAction(inputs)
         logger.info(
-            "meeting change: inMeeting=\(inMeeting, privacy: .public) isRec=\(inputs.isRecording, privacy: .public) isBusy=\(inputs.isBusy, privacy: .public) auto=\(inputs.autoRecordEnabled, privacy: .public) countdown=\(inputs.hasCountdown, privacy: .public) autoStarted=\(inputs.autoStarted, privacy: .public) → \(String(describing: action), privacy: .public)",
+            "meeting change: inMeeting=\(inMeeting, privacy: .public) isRec=\(inputs.isRecording, privacy: .public) auto=\(inputs.autoRecordEnabled, privacy: .public) countdown=\(inputs.hasCountdown, privacy: .public) autoStarted=\(inputs.autoStarted, privacy: .public) → \(String(describing: action), privacy: .public)",
         )
 
         switch action {
@@ -506,7 +522,7 @@ struct TranscribeerApp: App {
                 guard autoRecordCountdown === countdown else { return }
                 autoRecordCountdown = nil
                 NotificationManager.cancelMeetingCountdown()
-                guard meetingDetector.inMeeting, !runner.state.isBusy else { return }
+                guard meetingDetector.inMeeting, !runner.state.isRecording else { return }
                 startRecording(autoStarted: true, title: title)
             }
         }
