@@ -533,9 +533,10 @@ enum OpenAITranscription {
 
         let (data, response) = try await session.data(for: request)
         try TranscriptionHTTP.checkOK(response: response, body: data, backend: "OpenAI")
-        let audio = try AVAudioFile(forReading: audioURL)
-        let duration = Double(audio.length) / audio.processingFormat.sampleRate
-        return try parseResponse(data, fallbackDuration: duration)
+        return try parseResponse(data) {
+            let audio = try AVAudioFile(forReading: audioURL)
+            return Double(audio.length) / audio.processingFormat.sampleRate
+        }
     }
 
     struct Response: Decodable {
@@ -552,7 +553,10 @@ enum OpenAITranscription {
 
     /// Internal so unit tests can exercise the response shape directly
     /// without round-tripping through URLSession.
-    static func parseResponse(_ data: Data, fallbackDuration: TimeInterval = 0) throws -> [CoreSegment] {
+    static func parseResponse(
+        _ data: Data,
+        fallbackDuration: () throws -> TimeInterval = { 0 }
+    ) throws -> [CoreSegment] {
         let decoded: Response
         do {
             decoded = try JSONDecoder().decode(Response.self, from: data)
@@ -569,7 +573,7 @@ enum OpenAITranscription {
         // didn't return segment-level timestamps (some `gpt-4o-transcribe`
         // responses). Better than dropping the chunk silently.
         guard let text = decoded.text, !text.isEmpty else { return [] }
-        let end = decoded.duration ?? fallbackDuration
+        let end = try decoded.duration ?? fallbackDuration()
         return [CoreSegment(start: 0, end: end, text: text)]
     }
 }

@@ -49,22 +49,6 @@ struct RecordingMenuItems: View {
     }
 }
 
-/// Live state for a pending meeting auto-record countdown.
-///
-/// Reference type so the owning view can identity-check the active countdown
-/// inside the async timer task (user may cancel + new meeting detection may
-/// start a fresh one before the old task observes cancellation).
-@Observable
-@MainActor
-final class AutoRecordCountdown {
-    var secondsRemaining: Int
-    @ObservationIgnored var task: Task<Void, Never>?
-
-    init(secondsRemaining: Int) {
-        self.secondsRemaining = secondsRemaining
-    }
-}
-
 @main
 struct TranscribeerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -90,7 +74,10 @@ struct TranscribeerApp: App {
                 }
         } label: {
             MenuBarIcon(runner: runner)
-                .task { onFirstAppear() }
+                .task {
+                    onFirstAppear()
+                    await ModelsDevService.shared.refreshIfStale()
+                }
         }
         .menuBarExtraStyle(.menu)
 
@@ -505,29 +492,23 @@ struct TranscribeerApp: App {
 
         let appName = meetingDetector.detectedApp?.name
         countdown.task = Task { @MainActor in
-            let title = await meetingTitle()
-            guard !Task.isCancelled, autoRecordCountdown === countdown else { return }
-            var remaining = delay
-            while remaining > 0 {
-                autoRecordCountdown?.secondsRemaining = remaining
+            await countdown.run(readTitle: meetingTitle) { remaining, title in
+                guard autoRecordCountdown === countdown else {
+                    countdown.task?.cancel()
+                    return
+                }
                 NotificationManager.showMeetingCountdown(
                     secondsRemaining: remaining,
                     appName: meetingDetector.detectedApp?.name ?? appName,
                     title: title,
                 )
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return // cancelled
-                }
-                remaining -= 1
+            } onStart: { title in
+                guard autoRecordCountdown === countdown else { return }
+                autoRecordCountdown = nil
+                NotificationManager.cancelMeetingCountdown()
+                guard meetingDetector.inMeeting, !runner.state.isBusy else { return }
+                startRecording(autoStarted: true, title: title)
             }
-            // Timer complete — only fire if still the active countdown.
-            guard autoRecordCountdown === countdown else { return }
-            autoRecordCountdown = nil
-            NotificationManager.cancelMeetingCountdown()
-            guard meetingDetector.inMeeting, !runner.state.isBusy else { return }
-            startRecording(autoStarted: true, title: title)
         }
     }
 

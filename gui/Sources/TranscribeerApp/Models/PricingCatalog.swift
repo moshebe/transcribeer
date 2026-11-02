@@ -3,7 +3,7 @@ import Foundation
 /// Estimates per-session USD cost from token counts (summarization) and
 /// audio duration (cloud transcription).
 ///
-/// Chat pricing comes from `ModelPricingService` (which fetches
+/// Chat pricing comes from `ModelsDevService` (which fetches
 /// <https://models.dev/api.json> in the background and caches it on disk).
 /// When the catalog hasn't been populated yet — first launch, offline, etc.
 /// — we fall back to a tiny hardcoded table covering the models in the
@@ -19,7 +19,7 @@ enum PricingCatalog {
         let perMinute: Double
     }
 
-    /// Last-resort chat pricing. Kept short — `ModelPricingService` is the
+    /// Last-resort chat pricing. Kept short — `ModelsDevService` is the
     /// source of truth once the catalog cache has been hydrated.
     static let fallbackChatModels: [String: ChatModelPricing] = [
         "gpt-5": .init(inputPerMillion: 1.25, outputPerMillion: 10.0),
@@ -71,12 +71,12 @@ enum PricingCatalog {
         return pricing.perMinute * audioSeconds / 60
     }
 
-    /// Look up chat pricing, preferring the live `ModelPricingService`
+    /// Look up chat pricing, preferring the live `ModelsDevService`
     /// snapshot and falling back to the bundled table. Also strips trailing
     /// version dates (`gpt-4o-2024-05-13` → `gpt-4o`) so dated snapshots map
     /// onto their base model.
     private static func chatPricing(for model: String) -> ChatModelPricing? {
-        if let live = ModelPricingService.shared.chatPricing(for: model) { return live }
+        if let live = ModelsDevService.shared.chatPricing(for: model) { return live }
         if let exact = fallbackChatModels[model] { return exact }
         let lowered = model.lowercased()
         if let lowercaseHit = fallbackChatModels[lowered] { return lowercaseHit }

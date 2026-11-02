@@ -14,7 +14,7 @@ struct SummaryModelOption: Hashable, Identifiable, Sendable {
     var shortLabel: String { model }
 }
 
-/// Curated model names for the settings and summary menus.
+/// Model menus use models.dev, with a bundled fallback for the first offline launch.
 /// Ollama is fetched live via `/api/tags` because local installs vary wildly.
 enum SummarizationCatalog {
     /// Commonly-used OpenAI models for summarization.
@@ -40,13 +40,36 @@ enum SummarizationCatalog {
         "gemini-2.5-pro",
     ]
 
+    @MainActor
     static func models(for backend: LLMBackend, ollamaModels: [String] = []) -> [String] {
+        if let live = ModelsDevService.shared.summaryModels(for: backend) { return live }
+        return bundledModels(for: backend, ollamaModels: ollamaModels)
+    }
+
+    static func defaultModel(for backend: LLMBackend, availableModels: [String]) -> String {
+        let preferred = bundledModels(for: backend, ollamaModels: availableModels)
+        return preferred.first(where: availableModels.contains) ?? preferred.first ?? AppConfig().llmModel
+    }
+
+    private static func bundledModels(for backend: LLMBackend, ollamaModels: [String]) -> [String] {
         switch backend {
         case .openai: openaiModels
         case .anthropic: anthropicModels
         case .gemini: geminiModels
         case .ollama: ollamaModels
         }
+    }
+
+    @MainActor
+    static var cloudOptions: [SummaryModelOption] {
+        LLMBackend.allCases.flatMap { backend in
+            models(for: backend).map { SummaryModelOption(backend: backend, model: $0) }
+        }
+    }
+
+    @MainActor
+    static var geminiTranscriptionModels: [String] {
+        ModelsDevService.shared.geminiTranscriptionModels ?? geminiModels
     }
 
     /// Curated cloud catalog (Ollama is fetched live).

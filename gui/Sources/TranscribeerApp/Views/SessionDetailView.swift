@@ -45,7 +45,7 @@ struct SessionDetailView: View {
     @State private var selectedProfile = "default"
     @State private var selectedSummaryModel: SummaryModelOption?
     @State private var summaryFocus: String = ""
-    @State private var summaryModelOptions: [SummaryModelOption] = []
+    @State private var ollamaModels: [String] = []
     @State private var selectedLanguage: TranscriptionLanguage = .auto
     @State private var summaryLanguage: TranscriptionLanguage = .auto
     @State private var notesSaveTask: Task<Void, Never>?
@@ -192,16 +192,22 @@ struct SessionDetailView: View {
     /// picker reflects both cloud models and whatever the user has pulled
     /// locally. Runs on first appearance and when the Ollama host changes.
     private func refreshSummaryModels() async {
-        let ollamaModels = await SummarizationCatalog.fetchOllamaModels(host: config.ollamaHost)
-        let options = SummarizationCatalog.optionsIncludingDefault(
+        let models = await SummarizationCatalog.fetchOllamaModels(host: config.ollamaHost)
+        guard !Task.isCancelled else { return }
+        ollamaModels = models
+        await ModelsDevService.shared.refreshIfStale()
+    }
+
+    private var summaryModelOptions: [SummaryModelOption] {
+        var options = SummarizationCatalog.optionsIncludingDefault(
             default: defaultSummaryModel,
             ollamaModels: ollamaModels,
+            staticModels: SummarizationCatalog.cloudOptions,
         )
-        summaryModelOptions = options
-        if let current = selectedSummaryModel,
-           !options.contains(where: { $0.id == current.id }) {
-            selectedSummaryModel = defaultSummaryModel
+        if let selectedSummaryModel, !options.contains(selectedSummaryModel) {
+            options.append(selectedSummaryModel)
         }
+        return options
     }
 
     private func syncLanguage() {
