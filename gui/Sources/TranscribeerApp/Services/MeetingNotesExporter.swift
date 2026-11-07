@@ -8,8 +8,12 @@ private let logger = Logger(subsystem: "com.transcribeer", category: "meeting-no
 /// so tools outside the app (an Obsidian vault, a notes repo) can pick them up.
 ///
 /// Each file carries a `transcribeer_session` key. Re-exporting a session
-/// first removes the files carrying its key, so renames and re-summaries
-/// replace the old notes instead of piling up.
+/// first removes the files carrying its key (and the audio copy they name),
+/// so renames and re-summaries replace the old notes instead of piling up.
+///
+/// With `exportIncludeAudio` the recording is copied too, which turns the
+/// folder into a backup — point it at an iCloud Drive or Google Drive folder
+/// and the provider's own app uploads it.
 enum MeetingNotesExporter {
     enum ExportError: LocalizedError {
         case folderMissing(String)
@@ -22,6 +26,9 @@ enum MeetingNotesExporter {
     }
 
     static let sessionKey = "transcribeer_session"
+    /// Frontmatter key naming the exported audio copy, so it is replaced
+    /// along with the notes.
+    static let audioKey = "audio"
 
     /// Export when enabled in `config`. Returns a line for the session's
     /// `run.log`, or `nil` when export is off. Never throws: export is a side
@@ -31,7 +38,7 @@ enum MeetingNotesExporter {
         guard integ.exportFolderEnabled, !integ.exportFolderPath.isEmpty else { return nil }
         let folder = URL(fileURLWithPath: (integ.exportFolderPath as NSString).expandingTildeInPath)
         do {
-            let written = try export(session: session, to: folder)
+            let written = try export(session: session, to: folder, includeAudio: integ.exportIncludeAudio)
             return "export: wrote " + written.map(\.lastPathComponent).joined(separator: ", ")
         } catch {
             logger.error("export failed: \(error.localizedDescription, privacy: .public)")
@@ -40,7 +47,7 @@ enum MeetingNotesExporter {
     }
 
     @discardableResult
-    static func export(session: URL, to folder: URL) throws -> [URL] {
+    static func export(session: URL, to folder: URL, includeAudio: Bool = false) throws -> [URL] {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue else {
             throw ExportError.folderMissing(folder.path)
@@ -60,20 +67,31 @@ enum MeetingNotesExporter {
         let summary = nonEmptyContents(of: session.appendingPathComponent("summary.md"))
         let transcript = nonEmptyContents(of: session.appendingPathComponent("transcript.txt"))
         let transcriptName = "\(base)-transcript.md"
+        let audio = includeAudio ? SessionManager.audioURL(in: session) : nil
+        let audioName = audio.map { "\(base)-audio.\($0.pathExtension)" }
+        let audioExtra = audioName.map { ["\(audioKey): \($0)"] } ?? []
 
         var written: [URL] = []
+        if let audio, let audioName {
+            let dest = folder.appendingPathComponent(audioName)
+            // An audio-only export has no note naming it, so replace in place.
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.copyItem(at: audio, to: dest)
+            written.append(dest)
+        }
         if let summary {
             let note = frontmatter(
                 header,
                 suffix: "summary",
-                extra: transcript == nil ? [] : ["transcript: \(transcriptName)"]
+                extra: (transcript == nil ? [] : ["transcript: \(transcriptName)"]) + audioExtra
             ) + "\n# \(title) - Summary\n\n" + summary
             let dest = folder.appendingPathComponent("\(base)-summary.md")
             try note.write(to: dest, atomically: true, encoding: .utf8)
             written.append(dest)
         }
         if let transcript {
-            let note = frontmatter(header, suffix: "transcript") + "\n# \(title) - Transcript\n\n" + transcript
+            let note = frontmatter(header, suffix: "transcript", extra: audioExtra)
+                + "\n# \(title) - Transcript\n\n" + transcript
             let dest = folder.appendingPathComponent(transcriptName)
             try note.write(to: dest, atomically: true, encoding: .utf8)
             written.append(dest)
@@ -139,9 +157,18 @@ enum MeetingNotesExporter {
         let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
         for file in files where file.pathExtension == "md" {
             guard let head = try? String(contentsOf: file, encoding: .utf8).prefix(1024),
-                  head.hasPrefix("---"),
-                  head.split(separator: "\n").contains(where: { $0 == marker })
+                  head.hasPrefix("---")
             else { continue }
+            let lines = head.split(separator: "\n")
+            guard lines.contains(where: { $0 == marker }) else { continue }
+            // The audio copy is named in the notes; a bare filename only, so a
+            // crafted note can't point the removal outside `folder`.
+            if let audioLine = lines.first(where: { $0.hasPrefix("\(audioKey): ") }) {
+                let name = String(audioLine.dropFirst(audioKey.count + 2))
+                if !name.isEmpty, !name.contains("/"), name != ".", name != ".." {
+                    try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+                }
+            }
             try FileManager.default.removeItem(at: file)
         }
     }

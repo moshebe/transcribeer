@@ -79,9 +79,24 @@ struct AppConfig: Equatable {
         /// Mirror each session's summary + transcript as Markdown notes here.
         var exportFolderEnabled: Bool = false
         var exportFolderPath: String = ""
+        /// Also copy the recording's audio, making the folder a backup.
+        var exportIncludeAudio: Bool = false
     }
 
     var integrations: IntegrationsConfig = .init()
+
+    // MARK: - Retention
+
+    /// Opt-in clean-up of old sessions. Summaries, notes and metadata are
+    /// always kept; the user picks which heavier or more sensitive files go.
+    struct RetentionSettings: Equatable {
+        var enabled: Bool = false
+        var days: Int = 30
+        var deleteAudio: Bool = true
+        var deleteTranscript: Bool = false
+    }
+
+    var retention = RetentionSettings()
 
     var expandedSessionsDir: String {
         (sessionsDir as NSString).expandingTildeInPath
@@ -113,6 +128,7 @@ struct TOMLFile: Decodable {
     var paths: PathsSection?
     var audio: AudioSection?
     var integrations: IntegrationsSection?
+    var retention: RetentionSection?
 }
 
 struct PipelineSection: Decodable {
@@ -176,6 +192,14 @@ struct IntegrationsSection: Decodable {
     var export_folder_enabled: Bool?
     var export_folder_path: String?
     var export_formats: [String]?
+    var export_include_audio: Bool?
+}
+
+struct RetentionSection: Decodable {
+    var enabled: Bool?
+    var days: Int?
+    var delete_audio: Bool?
+    var delete_transcript: Bool?
 }
 
 // swiftlint:enable discouraged_optional_boolean
@@ -220,6 +244,7 @@ enum ConfigManager {
         if let paths = toml.paths { applyPaths(paths, to: &cfg) }
         if let audio = toml.audio { applyAudio(audio, to: &cfg) }
         if let integrations = toml.integrations { applyIntegrations(integrations, to: &cfg) }
+        if let retention = toml.retention { applyRetention(retention, to: &cfg) }
         return cfg
     }
 
@@ -304,6 +329,14 @@ enum ConfigManager {
         if let formats = s.export_formats {
             cfg.integrations.exportFormats = formats
         }
+        cfg.integrations.exportIncludeAudio = s.export_include_audio ?? cfg.integrations.exportIncludeAudio
+    }
+
+    private static func applyRetention(_ s: RetentionSection, to cfg: inout AppConfig) {
+        cfg.retention.enabled = s.enabled ?? cfg.retention.enabled
+        cfg.retention.days = max(1, s.days ?? cfg.retention.days)
+        cfg.retention.deleteAudio = s.delete_audio ?? cfg.retention.deleteAudio
+        cfg.retention.deleteTranscript = s.delete_transcript ?? cfg.retention.deleteTranscript
     }
 
     static func save(_ cfg: AppConfig, to path: URL = configPath) {
@@ -374,6 +407,13 @@ enum ConfigManager {
         export_formats = [\(exportFormats)]
         export_folder_enabled = \(cfg.integrations.exportFolderEnabled)
         export_folder_path = \(tomlString(cfg.integrations.exportFolderPath))
+        export_include_audio = \(cfg.integrations.exportIncludeAudio)
+
+        [retention]
+        enabled = \(cfg.retention.enabled)
+        days = \(cfg.retention.days)
+        delete_audio = \(cfg.retention.deleteAudio)
+        delete_transcript = \(cfg.retention.deleteTranscript)
         """
         try? lines.write(to: path, atomically: true, encoding: .utf8)
     }
