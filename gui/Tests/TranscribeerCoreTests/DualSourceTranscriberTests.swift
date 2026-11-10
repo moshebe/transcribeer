@@ -24,18 +24,23 @@ struct DualSourceTranscriberTests {
         #expect(result[1].start == 3)
     }
 
-    @Test("Mic-only with non-zero epoch applies offset")
-    func micOnlyOffset() {
-        let mic = [TranscriptSegment(start: 0, end: 1, text: "Hey")]
+    @Test(
+        "A missing stream epoch does not shift the present stream",
+        arguments: [
+            DualSourceTranscriber.TimingInfo(micStartEpoch: 1_794_229_599.25, sysStartEpoch: nil),
+            DualSourceTranscriber.TimingInfo(micStartEpoch: nil, sysStartEpoch: 1_794_229_599.25),
+        ]
+    )
+    func singleStreamWithUnixEpoch(timing: DualSourceTranscriber.TimingInfo) {
+        let segs = [TranscriptSegment(start: 3, end: 4, text: "Hey")]
         let result = DualSourceTranscriber.mergeAndTag(
-            micSegments: mic,
-            sysSegments: nil,
-            timing: .init(micStartEpoch: 5, sysStartEpoch: nil),
+            micSegments: timing.micStartEpoch == nil ? nil : segs,
+            sysSegments: timing.sysStartEpoch == nil ? nil : segs,
+            timing: timing,
             selfLabel: "You",
             otherLabel: "Them"
         )
-        // sessionStart = min(5, 0) = 0; micOffset = 5
-        #expect(result[0].start == 5)
+        #expect(result.map(\.start) == [3])
     }
 
     @Test("Sys-only segments are all tagged other")
@@ -153,6 +158,17 @@ struct DualSourceTranscriberTests {
         let formatted = TranscriptFormatter.formatDual(segments)
         #expect(formatted.contains("[00:00 -> 00:04] You: Hello world"))
         #expect(formatted.contains("[00:05 -> 00:07] Them: Hi"))
+    }
+
+    @Test("formatDual splits long same-speaker runs at maxMergedDuration")
+    func formatDualCapsMergedRun() {
+        let segments = (0..<10).map { index in
+            LabeledSegment(start: Double(index * 20), end: Double(index * 20 + 20), speaker: "You", text: "s\(index)")
+        }
+        let lines = TranscriptFormatter.parse(TranscriptFormatter.formatDual(segments))
+        #expect(lines.count == 4)
+        #expect(lines.allSatisfy { $0.end - $0.start <= TranscriptFormatter.maxMergedDuration })
+        #expect(lines.map(\.text).joined(separator: " ") == (0..<10).map { "s\($0)" }.joined(separator: " "))
     }
 
     @Test("formatDual uses configured labels directly")
