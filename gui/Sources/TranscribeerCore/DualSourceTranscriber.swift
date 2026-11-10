@@ -223,9 +223,7 @@ public enum DualSourceTranscriber {
             return TranscriptionOutput(segments: segments, detectedLanguage: detectedLanguage)
         }
 
-        let sessionStart = min(timing.micStartEpoch ?? 0, timing.sysStartEpoch ?? 0)
-        let micOffset = (timing.micStartEpoch ?? 0) - sessionStart
-        let sysOffset = (timing.sysStartEpoch ?? 0) - sessionStart
+        let (micOffset, sysOffset) = streamOffsets(timing)
 
         let micLabeled = try await diarizeAndLabelMic(
             micSegments: micSegments,
@@ -317,9 +315,7 @@ public enum DualSourceTranscriber {
         selfLabel: String,
         otherLabel: String
     ) -> [LabeledSegment] {
-        let sessionStart = min(timing.micStartEpoch ?? 0, timing.sysStartEpoch ?? 0)
-        let micOffset = (timing.micStartEpoch ?? 0) - sessionStart
-        let sysOffset = (timing.sysStartEpoch ?? 0) - sessionStart
+        let (micOffset, sysOffset) = streamOffsets(timing)
 
         let mic = (micSegments ?? []).map { shifted($0, offset: micOffset, speaker: selfLabel) }
         let sys = (sysSegments ?? []).map { shifted($0, offset: sysOffset, speaker: otherLabel) }
@@ -329,6 +325,16 @@ public enum DualSourceTranscriber {
             if a.start != b.start { return a.start < b.start }
             return a.speaker == selfLabel && b.speaker != selfLabel
         }
+    }
+
+    /// Per-stream offsets relative to the earliest *recorded* stream start.
+    /// A missing epoch (stream absent) must not pull the session start to 0 —
+    /// epochs are Unix timestamps, so that would shift the other stream by ~56 years.
+    static func streamOffsets(_ timing: TimingInfo) -> (mic: Double, sys: Double) {
+        let sessionStart = [timing.micStartEpoch, timing.sysStartEpoch].compactMap(\.self).min() ?? 0
+        let mic = timing.micStartEpoch.map { $0 - sessionStart } ?? 0
+        let sys = timing.sysStartEpoch.map { $0 - sessionStart } ?? 0
+        return (mic, sys)
     }
 
     // MARK: - Legacy mixed

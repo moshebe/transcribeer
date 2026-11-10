@@ -101,12 +101,24 @@ public enum TranscriptFormatter {
         return render(mergeConsecutive(segments))
     }
 
+    /// Longest span (seconds) a merged same-speaker line may cover. Without a
+    /// cap, a single-speaker recording (mic only) collapses into one line for
+    /// the whole session — useless for seeking and large enough to crash
+    /// AppKit's text field editor when the user clicks it.
+    static let maxMergedDuration: Double = 60
+
+    /// Longest text a parsed transcript line may hold before `parse` splits it.
+    /// Guards transcripts written before `maxMergedDuration` existed.
+    static let maxLineCharacters = 1_000
+
     /// Merge consecutive segments with the same speaker; `end` and `text` are
     /// accumulated, `start` and `speaker` come from the first segment in the run.
+    /// A run is closed once it would exceed `maxMergedDuration`.
     private static func mergeConsecutive(_ segments: [LabeledSegment]) -> [LabeledSegment] {
         var merged: [LabeledSegment] = []
         for seg in segments {
-            if let last = merged.last, last.speaker == seg.speaker {
+            if let last = merged.last, last.speaker == seg.speaker,
+               seg.end - last.start <= maxMergedDuration {
                 let prev = merged.removeLast()
                 merged.append(LabeledSegment(
                     start: prev.start,
@@ -201,6 +213,42 @@ public enum TranscriptFormatter {
             }
         }
         return lines
+            .flatMap(splitOversized)
+            .enumerated()
+            .map { index, line in
+                TranscriptLine(id: index, start: line.start, end: line.end, speaker: line.speaker, text: line.text)
+            }
+    }
+
+    /// Splits a line longer than `maxLineCharacters` into word-boundary chunks,
+    /// preferring sentence ends. Timestamps are interpolated by character
+    /// offset — approximate, but keeps click-to-seek roughly on target.
+    static func splitOversized(_ line: TranscriptLine) -> [TranscriptLine] {
+        guard line.text.count > maxLineCharacters else { return [line] }
+        var chunks: [String] = []
+        var current = ""
+        for word in line.text.split(separator: " ") {
+            if !current.isEmpty, current.count + word.count + 1 > maxLineCharacters {
+                chunks.append(current)
+                current = ""
+            }
+            current += current.isEmpty ? String(word) : " " + word
+            if current.count >= maxLineCharacters / 2, let end = word.last, ".?!".contains(end) {
+                chunks.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { chunks.append(current) }
+
+        let total = Double(line.text.count)
+        let span = line.end - line.start
+        var consumed = 0
+        return chunks.map { chunk in
+            let start = line.start + span * Double(consumed) / total
+            consumed += chunk.count + 1
+            let end = min(line.end, line.start + span * Double(consumed) / total)
+            return TranscriptLine(id: line.id, start: start, end: end, speaker: line.speaker, text: chunk)
+        }
     }
 
     /// Parse `MM:SS` or `HH:MM:SS` into seconds. Returns 0 on malformed input.

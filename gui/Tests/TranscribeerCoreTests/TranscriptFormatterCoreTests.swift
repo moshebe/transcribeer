@@ -122,4 +122,28 @@ struct TranscriptFormatterCoreTests {
         )
         #expect(result.isEmpty)
     }
+
+    // MARK: - parse: oversized lines
+
+    @Test("parse splits an oversized line into bounded chunks with interpolated times")
+    func parseSplitsOversizedLine() {
+        let sentence = "שלום עולם זה משפט ארוך."
+        let text = Array(repeating: sentence, count: 400).joined(separator: " ")
+        let lines = TranscriptFormatter.parse("[00:00 -> 40:00] You: \(text)")
+
+        #expect(lines.count > 1)
+        #expect(lines.allSatisfy { $0.text.count <= TranscriptFormatter.maxLineCharacters })
+        #expect(lines.map(\.text).joined(separator: " ") == text)
+        #expect(lines.map(\.id) == Array(lines.indices))
+        #expect(lines.first?.start == 0)
+        #expect(zip(lines, lines.dropFirst()).allSatisfy { $0.start < $1.start && $0.end <= $1.start + 0.001 })
+        #expect((lines.last?.end ?? 0) <= 2_400)
+    }
+
+    @Test("parse leaves normal lines untouched")
+    func parseKeepsShortLines() {
+        let lines = TranscriptFormatter.parse("[00:01 -> 00:05] You: hi\n[00:06 -> 00:09] Them: yo")
+        #expect(lines.map(\.text) == ["hi", "yo"])
+        #expect(lines.map(\.id) == [0, 1])
+    }
 }
