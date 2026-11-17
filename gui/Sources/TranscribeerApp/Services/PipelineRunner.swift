@@ -106,6 +106,8 @@ final class PipelineRunner {
     /// Active participants recorder for the current session, `nil` when idle.
     private var participantsRecorder: SessionParticipantsRecorder?
     private var titlePollTask: Task<Void, Never>?
+    /// Start-time calendar match. Cancelled and awaited before the stop match.
+    @ObservationIgnored var calendarStartTask: Task<Void, Never>?
 
     /// Append a timestamped line to the current session's `run.log`. No-op
     /// when no session is active. Used by the app layer to record events that

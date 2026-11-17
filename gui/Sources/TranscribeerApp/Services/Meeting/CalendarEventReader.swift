@@ -15,6 +15,11 @@ actor CalendarEventReader {
         EKEventStore.authorizationStatus(for: .event) == .fullAccess
     }
 
+    /// The user (or a policy) refused access, as opposed to never being asked.
+    nonisolated static var isDenied: Bool {
+        [.denied, .restricted, .writeOnly].contains(EKEventStore.authorizationStatus(for: .event))
+    }
+
     /// Ask for full calendar access. Returns the resulting state; macOS shows
     /// the prompt only once, later calls return the stored answer.
     func requestAccess() async -> Bool {
@@ -26,13 +31,14 @@ actor CalendarEventReader {
         }
     }
 
-    /// Events that intersect `window`, from calendars whose title contains one
-    /// of `calendarNames` (case-insensitive). Empty `calendarNames` = all.
+    /// Events that intersect `window`, from calendars whose title equals one of
+    /// `calendarNames` (case-insensitive). Empty `calendarNames` = all.
     /// Returns `nil` without calendar access.
     func events(in window: DateInterval, calendarNames: [String]) -> [CalendarEvent]? {
         guard Self.isAuthorized else { return nil }
         let calendars = store.calendars(for: .event).filter { calendar in
-            calendarNames.isEmpty || calendarNames.contains { calendar.title.localizedCaseInsensitiveContains($0) }
+            calendarNames.isEmpty
+                || calendarNames.contains { calendar.title.caseInsensitiveCompare($0) == .orderedSame }
         }
         guard !calendars.isEmpty else { return [] }
         let predicate = store.predicateForEvents(withStart: window.start, end: window.end, calendars: calendars)

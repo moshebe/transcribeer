@@ -1,8 +1,8 @@
 import Foundation
 
-/// Who set a session's name. Automatic sources never overwrite the user, and a
+/// Who set a session's name. Automatic sources never overwrite the user, a
 /// calendar title wins over a Zoom topic (a personal meeting room topic says
-/// less than the event title).
+/// less than the event title), and a Zoom topic only names an unnamed session.
 enum SessionNameSource: String, Sendable {
     case user, calendar, zoom
 
@@ -21,15 +21,18 @@ extension SessionManager {
     private static let replacedSourceKey = "replaced_name_source"
 
     /// Set an automatic name. Writes only when the session has no name, or
-    /// when its current name came from an automatic source of the same or
-    /// lower rank. A name with no recorded source predates `name_source` and
-    /// counts as the user's.
+    /// when its current name came from an automatic source the new one may
+    /// replace (see `shouldReplaceName`), and never when nothing would change.
+    /// A name with no recorded source predates `name_source` and counts as the
+    /// user's.
     @discardableResult
     static func setAutomaticName(_ dir: URL, _ name: String, source: SessionNameSource) -> Bool {
         var meta = readMeta(dir)
         let current = meta["name"] as? String ?? ""
         let currentSource = (meta["name_source"] as? String).flatMap(SessionNameSource.init(rawValue:))
-        guard shouldReplaceName(current: current, currentSource: currentSource, with: source) else { return false }
+        guard current != name || currentSource != source,
+              shouldReplaceName(current: current, currentSource: currentSource, with: source)
+        else { return false }
         if source == .calendar, !current.isEmpty, let currentSource, currentSource != .calendar {
             meta[replacedNameKey] = current
             meta[replacedSourceKey] = currentSource.rawValue
@@ -46,7 +49,7 @@ extension SessionManager {
         with source: SessionNameSource,
     ) -> Bool {
         guard !current.isEmpty else { return true }
-        guard let currentSource, currentSource != .user else { return false }
+        guard source != .zoom, let currentSource, currentSource != .user else { return false }
         return source.rank >= currentSource.rank
     }
 

@@ -23,7 +23,7 @@ struct CalendarEnricherSection: View {
                 get: { config.calendarEnricherEnabled },
                 set: { setEnabled($0) },
             ))
-            if config.calendarEnricherEnabled || !authorized {
+            if config.calendarEnricherEnabled || CalendarEventReader.isDenied {
                 accessRow
             }
             TextField("Calendars", text: $calendarNamesText, prompt: Text("All calendars"))
@@ -34,8 +34,8 @@ struct CalendarEnricherSection: View {
         } footer: {
             Text("Finds the calendar event that overlaps each recording and saves its title and "
                 + "attendees with the session. The event title becomes the session name unless "
-                + "you named it yourself. Calendars: comma-separated names to search "
-                + "(part of a name is enough); leave empty for all.")
+                + "you named it yourself. Calendars: comma-separated calendar names to search, "
+                + "as Calendar.app shows them; leave empty for all.")
                 .foregroundStyle(.secondary)
         }
         .onAppear {

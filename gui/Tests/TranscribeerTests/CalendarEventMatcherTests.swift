@@ -156,15 +156,4 @@ struct CalendarEventMatcherTests {
         )
         #expect(match?.title == testCase.expected)
     }
-
-    @Test("requireAttendees false keeps solo events")
-    func soloEventsWhenAllowed() {
-        let match = CalendarEventMatcher.bestMatch(
-            [Self.event("Focus", from: 0, to: 60, attendees: 0)],
-            start: Self.at(0),
-            end: Self.at(30),
-            requireAttendees: false,
-        )
-        #expect(match?.title == "Focus")
-    }
 }

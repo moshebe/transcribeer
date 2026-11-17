@@ -36,7 +36,7 @@ SwiftLint warning. New logic goes in new files or extensions.
 - Candidates: events that overlap the recording window. With no end (recording in progress), the window is
   10 minutes from the start, so a meeting that is about to end loses to one that is about to begin.
   (2026-11-17: a 30-minute window picked the next meeting, a forum that began 13 minutes after recording start.)
-- Filters: drop all-day events, events the user declined, and (by default) events with no other attendees.
+- Filters: drop all-day events, events the user declined, and events with no other attendees.
 - Score: overlap in seconds. On a tie (double booking), prefer the event the user accepted, then the event with
   fewer attendees (a 1:1 over a forum). If still tied, return `nil`. Never guess.
 
@@ -48,7 +48,7 @@ SwiftLint warning. New logic goes in new files or extensions.
 - Fetch events for a window and map each to `CalendarCandidate` (title, start, end, all-day, user status,
   attendees with name / email / status, organizer email, calendar title, external ID).
 - Attendee email comes from `EKParticipant.url` (`mailto:`).
-- Optional filter by calendar title (`calendarNames`, empty = all).
+- Optional filter by calendar title (`calendarNames`, exact case-insensitive match, empty = all).
 
 ### 3. When to match
 
@@ -57,8 +57,11 @@ SwiftLint warning. New logic goes in new files or extensions.
 - Record start: match on events in progress. Set the session name if it is empty.
 - Record stop, before transcription: match again with the full window. Replace the name only if the calendar set it.
 - `meta.json` gets `name_source` (`user` / `calendar` / `zoom`). Precedence: user, then calendar, then Zoom
-  (a Zoom personal meeting room topic says less than the event title). A user rename sets `user`. A name with no
-  `name_source` predates this change and counts as the user's.
+  (a Zoom personal meeting room topic says less than the event title). A Zoom topic only names an unnamed session
+  (as before this change). No automatic source writes when the name would not change. A user rename sets `user`.
+  A name with no `name_source` predates this change and counts as the user's.
+- The start match runs in a task that `PipelineRunner` keeps. The stop step cancels and awaits it before the stop
+  match, so a slow start match cannot overwrite the stop match.
 - Upstream applies the Zoom topic only to auto-started recordings (`applyMeetingTitle`). The calendar match runs
   for every recording.
 - The stop match is authoritative. If it finds no event, it removes the start match and any name the calendar set.
@@ -106,6 +109,12 @@ in-progress at start), `calendar_event` meta round trip, `name_source` precedenc
 
 ### PR 2 - `feat: calendar event in meeting-notes export`
 
+Review decisions (#40, #41):
+- Attendee emails in the export get their own opt-in setting (vaults sync, and #38 adds cloud backup).
+  `meta.json` keeps them, because it stays local.
+- `calendarItemExternalIdentifier` is shared by every occurrence of a recurring series: pair it with the
+  occurrence start time for the exported event ID.
+
 - Export frontmatter, when the session has a matched event:
   ```yaml
   calendar_event: "Itay / Or - 1:1"
@@ -119,6 +128,9 @@ in-progress at start), `calendar_event` meta round trip, `name_source` precedenc
 Tests: exporter frontmatter with and without an event.
 
 ### PR 3 - `feat: use meeting context in the pipeline`
+
+Review decision (#40): #37 adds `SummaryContext` (title and participants for the summarizer). Land #37 first,
+then feed the calendar attendees into `SummaryContext` instead of a second path.
 
 A `MeetingContext` value (title, attendee names, count, source), built from the calendar event and the Zoom
 participants. Zoom participants (people who joined) win over the invite list when both exist.
@@ -135,6 +147,9 @@ participants. Zoom participants (people who joined) win over the invite list whe
 Tests: label choice by attendee count, prompt building, context from each source.
 
 ## Out of scope
+
+- Re-match both halves when a session is split (back-to-back meetings). Follow-up after PR 2.
+- A calendar picker built from `store.calendars(for:)` in place of the typed calendar names.
 
 - On-export hook command.
 - Merging calendar attendees into the Zoom participants list.

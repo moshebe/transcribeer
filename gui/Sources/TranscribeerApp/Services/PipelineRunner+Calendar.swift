@@ -6,7 +6,7 @@ extension PipelineRunner {
     /// `runPipeline` refines it with the full window.
     func startCalendarMatch(for session: URL, startedAt: Date, config: AppConfig) {
         guard config.calendarEnricherEnabled else { return }
-        Task {
+        calendarStartTask = Task {
             let line = await CalendarEnricher.enrich(
                 session: session,
                 start: startedAt,
@@ -29,6 +29,10 @@ extension PipelineRunner {
     ) async {
         let endedAt = Date()
         SessionManager.setRecordingTimes(session, startedAt: startedAt, endedAt: endedAt)
+        // The stop match is authoritative: the start match must not write after it.
+        calendarStartTask?.cancel()
+        await calendarStartTask?.value
+        calendarStartTask = nil
         let line = await CalendarEnricher.enrich(
             session: session,
             start: startedAt,

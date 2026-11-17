@@ -30,9 +30,9 @@ enum CalendarEnricher {
         guard let candidates = await source(CalendarEventMatcher.recordingWindow(start: start, end: end)) else {
             return "calendar(\(stage.rawValue)): skipped, no calendar access"
         }
-        // The stop match is authoritative; a slow start query must not overwrite it.
-        if stage == .start, SessionManager.readMeta(session)["endedAt"] != nil {
-            return "calendar(start): skipped, recording already stopped"
+        // A cancelled start match (the recording stopped) leaves the stop match alone.
+        if stage == .start, Task.isCancelled {
+            return "calendar(start): cancelled, recording stopped"
         }
         guard let match = CalendarEventMatcher.bestMatch(candidates, start: start, end: end) else {
             // A full-window match is authoritative: drop a start-time guess it does not confirm.
@@ -43,7 +43,6 @@ enum CalendarEnricher {
         SessionManager.setCalendarEvent(session, match, stage: stage)
         let renamed = !match.title.isEmpty
             && SessionManager.setAutomaticName(session, match.title, source: .calendar)
-        return "calendar(\(stage.rawValue)): matched \"\(match.title)\" "
-            + "attendees=\(match.attendees.count) renamed=\(renamed)"
+        return "calendar(\(stage.rawValue)): matched event attendees=\(match.attendees.count) renamed=\(renamed)"
     }
 }

@@ -52,6 +52,7 @@ struct CalendarEnricherTests {
         NameCase(current: "Legacy", currentSource: nil, incoming: .calendar, replaces: false),
         NameCase(current: "Zoom topic", currentSource: .zoom, incoming: .calendar, replaces: true),
         NameCase(current: "Event", currentSource: .calendar, incoming: .zoom, replaces: false),
+        NameCase(current: "Old topic", currentSource: .zoom, incoming: .zoom, replaces: false),
         NameCase(current: "Event", currentSource: .calendar, incoming: .calendar, replaces: true),
     ])
     func nameReplacement(_ testCase: NameCase) {
@@ -213,29 +214,41 @@ struct CalendarEnricherTests {
         #expect(SessionManager.readCalendarEvent(dir) == Self.oneOnOne)
     }
 
-    @Test("a start match that finishes after stop does not overwrite the stop match")
-    func lateStartMatchIsSkipped() async throws {
+    @Test("a cancelled start match writes nothing")
+    func cancelledStartMatchWritesNothing() async throws {
         let dir = try Self.makeSessionDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let other = CalendarEventMatcherTests.event("Other", from: 30, to: 55)
-        SessionManager.setRecordingTimes(
-            dir,
-            startedAt: CalendarEventMatcherTests.at(38),
-            endedAt: CalendarEventMatcherTests.at(61),
-        )
-        SessionManager.setCalendarEvent(dir, Self.oneOnOne, stage: .stop)
+        let config = Self.enabledConfig
 
-        let line = await CalendarEnricher.enrich(
-            session: dir,
-            start: CalendarEventMatcherTests.at(38),
-            end: nil,
-            stage: .start,
-            config: Self.enabledConfig,
-            events: { _ in [other] },
-        )
+        let task = Task {
+            await CalendarEnricher.enrich(
+                session: dir,
+                start: CalendarEventMatcherTests.at(38),
+                end: nil,
+                stage: .start,
+                config: config,
+                events: { _ in
+                    try? await Task.sleep(for: .seconds(5))
+                    return [Self.oneOnOne]
+                },
+            )
+        }
+        task.cancel()
+        let line = await task.value
 
-        #expect(line?.contains("already stopped") == true)
-        #expect(SessionManager.readCalendarEvent(dir) == Self.oneOnOne)
+        #expect(line?.contains("cancelled") == true)
+        #expect(SessionManager.readCalendarEvent(dir) == nil)
+        #expect(SessionManager.readMeta(dir)["name"] == nil)
+    }
+
+    @Test("an automatic name that does not change is not written again")
+    func unchangedNameIsNotRewritten() throws {
+        let dir = try Self.makeSessionDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        #expect(SessionManager.setAutomaticName(dir, "Event", source: .calendar))
+        #expect(!SessionManager.setAutomaticName(dir, "Event", source: .calendar))
+        #expect(!SessionManager.setAutomaticName(dir, "New topic", source: .zoom))
     }
 
     @Test("clearing a calendar name restores the Zoom topic it replaced")

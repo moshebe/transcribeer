@@ -4,9 +4,8 @@ import Foundation
 /// `CalendarEvent` values, so it is tested without EventKit.
 ///
 /// Rules:
-/// - Drop all-day events, events the user declined and, when
-///   `requireAttendees` is set, events with no other attendees (focus blocks,
-///   personal reminders).
+/// - Drop all-day events, events the user declined and events with no other
+///   attendees (focus blocks, personal reminders).
 /// - Score each remaining event by how many seconds it overlaps the recording.
 ///   A recording still in progress (no `end`) uses a short window of
 ///   `inProgressWindow` from its start, so a meeting that is about to end
@@ -28,11 +27,10 @@ enum CalendarEventMatcher {
         _ events: [CalendarEvent],
         start: Date,
         end: Date?,
-        requireAttendees: Bool = true,
     ) -> CalendarEvent? {
         let recording = recordingWindow(start: start, end: end)
         let scored = events
-            .filter { isEligible($0, requireAttendees: requireAttendees) }
+            .filter(isEligible)
             .map { (event: $0, overlap: overlap($0, recording)) }
             .filter { $0.overlap > 0 }
         guard let best = scored.map(\.overlap).max() else { return nil }
@@ -50,9 +48,8 @@ enum CalendarEventMatcher {
         return smallest.count == 1 ? smallest.first : nil
     }
 
-    static func isEligible(_ event: CalendarEvent, requireAttendees: Bool) -> Bool {
-        guard !event.isAllDay, event.selfStatus != .declined, event.end > event.start else { return false }
-        return !requireAttendees || !event.attendees.isEmpty
+    static func isEligible(_ event: CalendarEvent) -> Bool {
+        !event.isAllDay && event.selfStatus != .declined && event.end > event.start && !event.attendees.isEmpty
     }
 
     private static func overlap(_ event: CalendarEvent, _ recording: DateInterval) -> TimeInterval {
