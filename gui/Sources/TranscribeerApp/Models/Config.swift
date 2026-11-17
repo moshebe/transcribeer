@@ -40,6 +40,12 @@ struct AppConfig: Equatable {
     /// so we skip collection entirely while the observed count exceeds this.
     /// Values `<= 0` disable participant capture.
     var maxMeetingParticipants: Int = 10
+    /// Match each recording to an event in the macOS calendar store (EventKit)
+    /// and save its title and attendees in `meta.json`. Off by default: it
+    /// reads personal data and needs calendar access.
+    var calendarEnricherEnabled: Bool = false
+    /// Calendar titles to search. Empty = all calendars.
+    var calendarNames: [String] = []
     var promptOnStop: Bool = false
     /// Warn before summarizing recordings longer than this many minutes.
     /// 0 = disabled (Track 4.5).
@@ -122,6 +128,8 @@ struct PipelineSection: Decodable {
     var meeting_auto_record_apps: [String]?
     var zoom_enricher_enabled: Bool?
     var max_meeting_participants: Int?
+    var calendar_enricher_enabled: Bool?
+    var calendar_names: [String]?
     var scheduled_transcription_enabled: Bool?
     var scheduled_transcription_hour: Int?
     var prompt_on_stop: Bool?
@@ -236,6 +244,8 @@ enum ConfigManager {
             cfg.maxMeetingParticipants = maxParticipants
         }
         cfg.zoomEnricherEnabled = s.zoom_enricher_enabled ?? cfg.zoomEnricherEnabled
+        cfg.calendarEnricherEnabled = s.calendar_enricher_enabled ?? cfg.calendarEnricherEnabled
+        cfg.calendarNames = s.calendar_names ?? cfg.calendarNames
         cfg.scheduledTranscriptionEnabled =
             s.scheduled_transcription_enabled ?? cfg.scheduledTranscriptionEnabled
         if let hour = s.scheduled_transcription_hour, (0...23).contains(hour) {
@@ -315,6 +325,9 @@ enum ConfigManager {
             .sorted()
             .map(tomlString)
             .joined(separator: ", ")
+        let calendarNames = cfg.calendarNames
+            .map(tomlString)
+            .joined(separator: ", ")
         let exportFormats = cfg.integrations.exportFormats
             .map(tomlString)
             .joined(separator: ", ")
@@ -326,6 +339,8 @@ enum ConfigManager {
         meeting_auto_record_apps = [\(autoRecordApps)]
         max_meeting_participants = \(cfg.maxMeetingParticipants)
         zoom_enricher_enabled = \(cfg.zoomEnricherEnabled)
+        calendar_enricher_enabled = \(cfg.calendarEnricherEnabled)
+        calendar_names = [\(calendarNames)]
         scheduled_transcription_enabled = \(cfg.scheduledTranscriptionEnabled)
         scheduled_transcription_hour = \(cfg.scheduledTranscriptionHour)
         open_app_hotkey = \(tomlString(cfg.openAppHotkey))

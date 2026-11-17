@@ -128,6 +128,7 @@ final class PipelineRunner {
         SessionManager.setRecordingTimes(session, startedAt: startTime, endedAt: nil)
         startParticipantsCapture(for: session, config: config)
         startTitlePolling(config: config)
+        startCalendarMatch(for: session, startedAt: startTime, config: config)
         state = .recording(startTime: startTime)
 
         pipelineTask = Task {
@@ -193,9 +194,7 @@ final class PipelineRunner {
     func applyMeetingTitle(_ title: String) {
         liveMeetingTitle = title
         guard meetingAutoStarted, let session = currentSession else { return }
-        let name = SessionManager.readMeta(session)["name"] as? String
-        guard name?.isEmpty != false else { return }
-        SessionManager.setName(session, title)
+        SessionManager.setAutomaticName(session, title, source: .zoom)
     }
 
     private func stopTitlePolling() {
@@ -285,7 +284,7 @@ final class PipelineRunner {
             logger.log("recorded \(size) bytes")
             // Stamp the wall-clock end of the capture so the sidebar can
             // show a "10:30 – 11:15" range for calendar correlation.
-            SessionManager.setRecordingTimes(session, startedAt: startedAt, endedAt: Date())
+            await stampRecordingEnd(session, startedAt: startedAt, config: config, log: logger.log)
         }
 
         if config.pipelineMode == "record-only" {
