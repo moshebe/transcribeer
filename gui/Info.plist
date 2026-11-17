@@ -22,6 +22,8 @@
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Transcribeer matches each recording to its calendar event, to name the session and list who attended. This is only used when the calendar option is on.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Transcribeer records your voice alongside system audio so your side of a call or meeting is included in the transcript.</string>
     <key>NSSystemAudioRecordingUsageDescription</key>

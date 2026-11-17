@@ -285,9 +285,10 @@ enum SessionManager {
         try? jsonData.write(to: path, options: .atomic)
     }
 
-    static func setName(_ dir: URL, _ name: String) {
+    static func setName(_ dir: URL, _ name: String, source: SessionNameSource = .user) {
         var data = readMeta(dir)
         data["name"] = name
+        data["name_source"] = source.rawValue
         writeMeta(dir, data)
     }
 

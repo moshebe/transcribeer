@@ -196,6 +196,8 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            CalendarEnricherSection(config: $config, save: save)
+
             // MARK: Post-recording prompt (Track 4.3)
             Section {
                 Toggle("Prompt after each recording", isOn: Binding(
