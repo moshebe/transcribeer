@@ -8,6 +8,8 @@ import TranscribeerCore
 /// stays under SwiftLint's file-length cap.
 struct SessionRow: View {
     let session: Session
+    /// Position in the processing queue, when the session waits there.
+    var queuePosition: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -27,12 +29,11 @@ struct SessionRow: View {
             HStack(spacing: 4) {
                 Text(SessionDateFormatter.sidebarLine(for: session))
                 if let badge = languageBadge {
-                    Text(badge)
-                        .font(.system(size: 9, weight: .medium))
-                        .tracking(0.5)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.15), in: Capsule())
+                    chip(badge)
+                }
+                if let queuePosition {
+                    chip("QUEUED #\(queuePosition)")
+                        .help("Waiting to be processed")
                 }
             }
             .font(.system(size: 11))
@@ -72,6 +73,15 @@ struct SessionRow: View {
                 help: session.hasSummary ? "Summary available" : "Not summarized"
             )
         }
+    }
+
+    private func chip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .medium))
+            .tracking(0.5)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.secondary.opacity(0.15), in: Capsule())
     }
 
     private func artifactIcon(systemName: String, present: Bool, help: String) -> some View {

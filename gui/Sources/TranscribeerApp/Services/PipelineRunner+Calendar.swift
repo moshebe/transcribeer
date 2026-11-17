@@ -3,7 +3,7 @@ import Foundation
 extension PipelineRunner {
     /// Match against the events in progress as soon as recording starts, so
     /// the session has its event name while it records. The stop-time match in
-    /// `runPipeline` refines it with the full window.
+    /// `runRecording` refines it with the full window.
     func startCalendarMatch(for session: URL, startedAt: Date, config: AppConfig) {
         guard config.calendarEnricherEnabled else { return }
         calendarStartTask = Task {

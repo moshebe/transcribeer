@@ -100,8 +100,30 @@ final class PipelineRunner {
     private(set) var pendingLongRecordingDuration: TimeInterval?
     @ObservationIgnored private var longRecordingContinuation: CheckedContinuation<Bool, Never>?
 
-    private var pipelineTask: Task<Void, Never>?
-    private var processingTask: Task<Void, Never>?
+    /// True while the recording that just ended waits for the user to answer
+    /// the post-recording prompt or the long-recording check.
+    var isAwaitingRecordingAnswer: Bool {
+        postRecordingSessionName != nil || pendingLongRecordingDuration != nil
+    }
+
+    private var recordingTask: Task<Void, Never>?
+
+    // MARK: - Processing queue
+
+    /// Finished recordings waiting to be transcribed / summarized, oldest
+    /// first. A new recording can start while these are processed.
+    var processingQueue: [QueuedSession] = []
+    /// Processes `processingQueue` one session at a time; nil when drained.
+    var queueWorker: Task<Void, Never>?
+    /// The job currently running, and its task (cancelled by `cancelProcessing`).
+    var processingItem: QueuedSession?
+    var processingItemTask: Task<CLIResult, Never>?
+    /// Phase of the processing queue. Mirrored into `state` whenever no
+    /// recording is in progress, and restored when one ends.
+    var processingState: AppState = .idle
+
+    /// Number of recordings still waiting behind the one being processed.
+    var queuedSessionCount: Int { processingQueue.count }
     var summarizeTask: Task<CLIResult, Never>?
     /// Active participants recorder for the current session, `nil` when idle.
     private var participantsRecorder: SessionParticipantsRecorder?
@@ -117,8 +139,11 @@ final class PipelineRunner {
         SessionLogger(logPath: session.appendingPathComponent("run.log")).log(message)
     }
 
+    /// Starts a recording even while earlier ones are still processing:
+    /// audio that isn't captured is lost for good, processing can wait.
     func startRecording(config: AppConfig) {
-        guard !state.isBusy else { return }
+        guard !state.isRecording else { return }
+        answerPendingQuestionsForNewRecording()
 
         let session = SessionManager.newSession(sessionsDir: config.expandedSessionsDir)
         currentSession = session
@@ -133,76 +158,9 @@ final class PipelineRunner {
         startCalendarMatch(for: session, startedAt: startTime, config: config)
         state = .recording(startTime: startTime)
 
-        pipelineTask = Task {
-            await runPipeline(session: session, startedAt: startTime, config: config)
+        recordingTask = Task {
+            await runRecording(session: session, startedAt: startTime, config: config)
         }
-    }
-
-    /// Spin up participant observation for the given session. Started at the
-    /// top of `startRecording` so even the early moments of a meeting are
-    /// captured. Torn down from every path that ends the recording.
-    ///
-    /// No-op when the Zoom enricher is disabled in `config` or when the
-    /// participant cap is set to 0 — avoids background AX polling for users
-    /// who have opted out.
-    private func startParticipantsCapture(for session: URL, config: AppConfig) {
-        guard config.zoomEnricherEnabled, config.maxMeetingParticipants > 0 else {
-            logger.info("zoom enricher disabled (enabled=\(config.zoomEnricherEnabled) cap=\(config.maxMeetingParticipants)) — skipping participant capture")
-            return
-        }
-        participantsWatcher.start()
-        let recorder = SessionParticipantsRecorder(
-            session: session,
-            watcher: participantsWatcher,
-            maxParticipants: config.maxMeetingParticipants,
-        )
-        participantsRecorder = recorder
-        recorder.start()
-    }
-
-    private func stopParticipantsCapture() {
-        participantsRecorder?.stop()
-        participantsRecorder = nil
-        participantsWatcher.stop()
-        stopTitlePolling()
-    }
-
-    /// Poll the Zoom AX topic every 2 s until a title is found. No-op when the Zoom enricher
-    /// is disabled — same contract as `startParticipantsCapture`.
-    ///
-    /// Once a non-nil title is observed it is sticky for the rest of the
-    /// session: later polls that return nil (e.g. the meeting window closed
-    /// before recording stops) do not wipe the UI label.
-    private func startTitlePolling(config: AppConfig) {
-        guard config.zoomEnricherEnabled else { return }
-        titlePollTask?.cancel()
-        if let title = meetingAutoStartContext?.title {
-            applyMeetingTitle(title)
-            return
-        }
-        titlePollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                let title = await ZoomTitleReader.meetingTitle()
-                guard !Task.isCancelled else { return }
-                if let title {
-                    self?.applyMeetingTitle(title)
-                    return
-                }
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
-    }
-
-    func applyMeetingTitle(_ title: String) {
-        liveMeetingTitle = title
-        guard meetingAutoStarted, let session = currentSession else { return }
-        SessionManager.setAutomaticName(session, title, source: .zoom)
-    }
-
-    private func stopTitlePolling() {
-        titlePollTask?.cancel()
-        titlePollTask = nil
-        liveMeetingTitle = nil
     }
 
     func stopRecording() {
@@ -213,7 +171,7 @@ final class PipelineRunner {
     /// Cancel an in-flight transcription or summarization. Does nothing while
     /// recording (use `stopRecording` for that).
     ///
-    /// Cancellation is cooperative: `pipelineTask.cancel()` propagates through
+    /// Cancellation is cooperative: `processingItemTask.cancel()` propagates through
     /// the structured task tree, and WhisperKit / HubApi check
     /// `Task.isCancelled` at various checkpoints. The CoreML model compile +
     /// prewarm step has no cancellation hook, so during that phase the pipeline
@@ -224,8 +182,7 @@ final class PipelineRunner {
         case .transcribing, .summarizing:
             isCancelling = true
             transcriptionService.cancel()
-            processingTask?.cancel()
-            pipelineTask?.cancel()
+            processingItemTask?.cancel()
             summarizeTask?.cancel()
             summarizeTask = nil
         case .awaitingPostRecordingChoice:
@@ -237,10 +194,10 @@ final class PipelineRunner {
         }
     }
 
-    private func runPipeline(session: URL, startedAt: Date, config: AppConfig) async {
+    /// Capture audio until the user (or meeting end) stops, then hand the
+    /// session to the processing queue.
+    private func runRecording(session: URL, startedAt: Date, config: AppConfig) async {
         let audioPath = session.appendingPathComponent("audio.m4a")
-        let transcriptPath = session.appendingPathComponent("transcript.txt")
-        let summaryPath = session.appendingPathComponent("summary.md")
         let logger = SessionLogger(logPath: session.appendingPathComponent("run.log"))
 
         logger.log("session=\(session.path)")
@@ -257,28 +214,23 @@ final class PipelineRunner {
             logger.log("start=manual")
         }
 
-        // 1. Record — in-process via CaptureCore (uses app's TCC permission)
+        // Record — in-process via CaptureCore (uses app's TCC permission)
         logger.log("capture started")
         let recordResult = await CaptureService.record(
             to: session,
             duration: nil,
             audio: config.audio
         )
+        stopParticipantsCapture()
 
         switch recordResult {
         case .permissionDenied(let detail):
-            stopParticipantsCapture()
-            reportFailure("capture failed: \(detail)", userFacing: detail, logger: logger)
-            return
+            reportCaptureFailure("capture failed: \(detail)", userFacing: detail, logger: logger)
         case .error(let err):
-            stopParticipantsCapture()
-            reportFailure("capture failed: \(err)", userFacing: err, logger: logger)
-            return
+            reportCaptureFailure("capture failed: \(err)", userFacing: err, logger: logger)
         case .noAudio:
-            stopParticipantsCapture()
             logger.log("no audio captured")
-            state = .idle
-            return
+            state = isProcessingActive ? processingState : .idle
         case .recorded:
             let size = (try? FileManager.default.attributesOfItem(
                 atPath: audioPath.path
@@ -287,26 +239,85 @@ final class PipelineRunner {
             // Stamp the wall-clock end of the capture so the sidebar can
             // show a "10:30 – 11:15" range for calendar correlation.
             await stampRecordingEnd(session, startedAt: startedAt, config: config, log: logger.log)
+            await handOffRecording(session, config: config, logger: logger)
+        }
+    }
+
+    /// Decide what to do with a finished recording while still in the
+    /// recording lane — the post-recording prompt and the long-recording check
+    /// are asked now, not when the job reaches the front of the queue, so an
+    /// unanswered question never stalls the queue. Then queue the work.
+    private func handOffRecording(_ session: URL, config: AppConfig, logger: SessionLogger) async {
+        let plan = await recordingPlan(for: session, config: config, logger: logger)
+        // Hand the UI back to whatever is still processing, unless the next
+        // recording has already taken it.
+        if !state.isRecording {
+            state = isProcessingActive ? processingState : .idle
+        }
+        switch plan {
+        case .discard:
+            try? FileManager.default.removeItem(at: session)
+        case .saveOnly:
+            // Don't replace the queue's phase with "done" for this one.
+            await finishSession(session, config: config, showDone: !isProcessingActive)
+        case .transcribe(let summarize):
+            if queueWorker != nil {
+                logger.log("queued behind \(processingQueue.count + 1) job(s) still processing")
+            }
+            enqueueProcessing(QueuedSession(session: session, config: config, job: .recording(summarize: summarize)))
+        }
+    }
+
+    private enum RecordingPlan: Equatable {
+        case discard, saveOnly
+        case transcribe(summarize: Bool)
+    }
+
+    private func recordingPlan(for session: URL, config: AppConfig, logger: SessionLogger) async -> RecordingPlan {
+        guard config.pipelineMode != "record-only" else { return .saveOnly }
+        let duration = await Self.audioDuration(session)
+        var summarize = config.pipelineMode != "record+transcribe"
+
+        // Track 4.3 — prompt-on-stop. Not asked once the next recording has
+        // started: it owns the UI.
+        if config.promptOnStop, !state.isRecording {
+            switch await askPostRecordingChoice(session: session, duration: duration) {
+            case .discard:
+                logger.log("post-recording: discard")
+                return .discard
+            case .saveOnly:
+                logger.log("post-recording: save-only")
+                return .saveOnly
+            case .transcribeOnly:
+                logger.log("post-recording: transcribe-only")
+                summarize = false
+            case .transcribeAndSummarize:
+                logger.log("post-recording: transcribe-and-summarize")
+            }
         }
 
-        if config.pipelineMode == "record-only" {
-            await finishSession(session, config: config)
-            return
+        // Track 4.5 — long-recording confirmation. Skipped without asking once
+        // the next recording has started; it can be summarized from History.
+        let threshold = Double(config.longRecordingThresholdMinutes) * 60
+        if summarize, threshold > 0, duration > threshold {
+            summarize = state.isRecording ? false : await askLongRecordingConfirmation(duration: duration)
+            logger.log("long-recording: summarization \(summarize ? "confirmed" : "skipped")")
         }
+        return .transcribe(summarize: summarize)
+    }
 
-        // Track 4.3 — prompt-on-stop: ask user what to do before running pipeline.
-        // Returns false when the choice handled the pipeline end (discard/save/transcribe-only).
-        if config.promptOnStop {
-            let shouldContinue = await handlePostRecordingPrompt(
-                session: session,
-                transcriptPath: transcriptPath,
-                config: config,
-                logger: logger
-            )
-            guard shouldContinue else { return }
-        }
+    private static func audioDuration(_ session: URL) async -> TimeInterval {
+        let audioURL = session.appendingPathComponent("audio.m4a")
+        return (try? await AVURLAsset(url: audioURL).load(.duration))?.seconds ?? 0
+    }
 
-        // 2. Transcribe (WhisperKit + SpeakerKit)
+    /// Transcribe, and summarize when `summarize`, one finished recording.
+    func processSession(_ session: URL, config: AppConfig, summarize: Bool) async {
+        let transcriptPath = session.appendingPathComponent("transcript.txt")
+        let summaryPath = session.appendingPathComponent("summary.md")
+        let logger = SessionLogger(logPath: session.appendingPathComponent("run.log"))
+
+        // Transcribe (WhisperKit + SpeakerKit)
         guard await performTranscription(
             config: config,
             session: session,
@@ -314,12 +325,12 @@ final class PipelineRunner {
             logger: logger
         ) else { return }
 
-        if config.pipelineMode == "record+transcribe" {
+        guard summarize else {
             await finishSession(session, config: config)
             return
         }
 
-        // 3. Summarize (LLM) — failure here is non-fatal
+        // Summarize (LLM) — failure here is non-fatal
         await performSummarization(
             config: config,
             transcriptPath: transcriptPath,
@@ -333,58 +344,40 @@ final class PipelineRunner {
 
     // MARK: - Track 4.3 post-recording prompt
 
-    /// Suspends the pipeline until the user picks an action.
-    /// Returns `true` if the pipeline should proceed to transcription+summarization,
-    /// `false` if the choice already terminated the pipeline (discard/save/transcribe-only).
-    private func handlePostRecordingPrompt(
-        session: URL,
-        transcriptPath: URL,
-        config: AppConfig,
-        logger: SessionLogger
-    ) async -> Bool {
-        let name = SessionManager.displayName(session)
-        let audioURL = session.appendingPathComponent("audio.m4a")
-        let duration: TimeInterval
-        if let asset = try? await AVURLAsset(url: audioURL).load(.duration) {
-            duration = asset.seconds
-        } else {
-            duration = 0
-        }
-
+    /// Suspends the recording lane until the user picks an action.
+    private func askPostRecordingChoice(session: URL, duration: TimeInterval) async -> PostRecordingChoice {
         let choice = await withCheckedContinuation { (cont: CheckedContinuation<PostRecordingChoice, Never>) in
             postRecordingContinuation = cont
-            postRecordingSessionName = name
+            postRecordingSessionName = SessionManager.displayName(session)
             postRecordingDuration = duration
             state = .awaitingPostRecordingChoice
         }
-
         postRecordingSessionName = nil
         postRecordingDuration = 0
+        return choice
+    }
 
-        switch choice {
-        case .discard:
-            logger.log("post-recording: discard")
-            stopParticipantsCapture()
-            try? FileManager.default.removeItem(at: session)
-            state = .idle
-            return false
-        case .saveOnly:
-            logger.log("post-recording: save-only")
-            await finishSession(session, config: config)
-            return false
-        case .transcribeOnly:
-            logger.log("post-recording: transcribe-only")
-            guard await performTranscription(
-                config: config,
-                session: session,
-                transcriptPath: transcriptPath,
-                logger: logger
-            ) else { return false }
-            await finishSession(session, config: config)
-            return false
-        case .transcribeAndSummarize:
-            logger.log("post-recording: transcribe-and-summarize")
-            return true
+    /// Suspends the recording lane until the user confirms (or skips)
+    /// summarizing a long recording.
+    private func askLongRecordingConfirmation(duration: TimeInterval) async -> Bool {
+        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            longRecordingContinuation = cont
+            pendingLongRecordingDuration = duration
+            state = .awaitingLongRecordingConfirmation
+        }
+    }
+
+    /// A new recording takes the UI, so answer any question still pending for
+    /// the previous one: process it as if there were no prompt, but skip the
+    /// summary of a long recording (it can be summarized from History).
+    private func answerPendingQuestionsForNewRecording() {
+        if postRecordingContinuation != nil {
+            appendRunLog("post-recording: unanswered when the next recording started")
+            resolvePostRecordingChoice(.transcribeAndSummarize)
+        }
+        if longRecordingContinuation != nil {
+            appendRunLog("long-recording: unanswered when the next recording started")
+            confirmLongRecording(false)
         }
     }
 
@@ -407,8 +400,16 @@ final class PipelineRunner {
 
     // MARK: - Failure reporting
 
-    /// Log a failure message, flip state to `.error`, and post a user notification.
+    /// Log a processing failure, flip the queue's state to `.error`, and post
+    /// a user notification.
     private func reportFailure(_ logMessage: String, userFacing: String, logger: SessionLogger) {
+        logger.log(logMessage)
+        setProcessingState(.error(userFacing))
+        NotificationManager.notifyError(userFacing)
+    }
+
+    /// A capture failure ends the recording, so it owns `state` directly.
+    private func reportCaptureFailure(_ logMessage: String, userFacing: String, logger: SessionLogger) {
         logger.log(logMessage)
         state = .error(userFacing)
         NotificationManager.notifyError(userFacing)
@@ -420,7 +421,11 @@ final class PipelineRunner {
         transcriptPath: URL,
         logger: SessionLogger
     ) async -> Bool {
-        state = .transcribing
+        await waitForRecordingToEnd(
+            if: TranscriptionBackend.from(config.transcriptionBackend).isLocal,
+            logger: logger
+        )
+        setProcessingState(.transcribing)
         transcribingSession = session
         defer { transcribingSession = nil }
         logger.log("transcription started")
@@ -445,12 +450,10 @@ final class PipelineRunner {
             return true
         } catch is CancellationError {
             logger.log("transcription cancelled")
-            stopParticipantsCapture()
             isCancelling = false
-            state = .idle
+            setProcessingState(.idle)
             return false
         } catch {
-            stopParticipantsCapture()
             let message = "Transcription failed: \(error.localizedDescription)"
             reportFailure(message, userFacing: message, logger: logger)
             return false
@@ -464,28 +467,8 @@ final class PipelineRunner {
         session: URL,
         logger: SessionLogger
     ) async {
-        // Track 4.5 — long-recording confirmation gate
-        if config.longRecordingThresholdMinutes > 0 {
-            let audioURL = session.appendingPathComponent("audio.m4a")
-            if let cmDuration = try? await AVURLAsset(url: audioURL).load(.duration) {
-                let seconds = cmDuration.seconds
-                let thresholdSeconds = Double(config.longRecordingThresholdMinutes) * 60
-                if seconds > thresholdSeconds {
-                    let shouldSummarize = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                        longRecordingContinuation = cont
-                        pendingLongRecordingDuration = seconds
-                        state = .awaitingLongRecordingConfirmation
-                    }
-                    if !shouldSummarize {
-                        logger.log("long-recording: user skipped summarization")
-                        return
-                    }
-                    logger.log("long-recording: user confirmed summarization")
-                }
-            }
-        }
-
-        state = .summarizing
+        await waitForRecordingToEnd(if: config.llmBackend == LLMBackend.ollama.rawValue, logger: logger)
+        setProcessingState(.summarizing)
         logger.log("summarization started backend=\(config.llmBackend) model=\(config.llmModel) profile=\(promptProfile ?? "default")")
         do {
             let transcript = try String(contentsOf: transcriptPath, encoding: .utf8)
@@ -558,17 +541,89 @@ final class PipelineRunner {
         return accumulated
     }
 
-    private func finishSession(_ session: URL, config: AppConfig) async {
-        stopParticipantsCapture()
+    private func finishSession(_ session: URL, config: AppConfig, showDone: Bool = true) async {
         // Compact the raw capture sidecars before announcing `.done`, so a
         // re-transcribe triggered off the finished session never resolves a
         // raw `.caf` that compaction is about to delete.
         await compactSourceSidecars(in: session, ffmpegPath: config.audio.ffmpegPath)
-        state = .done(sessionPath: session.path)
+        if showDone {
+            setProcessingState(.done(sessionPath: session.path))
+        }
         NotificationManager.notifyDone(sessionName: SessionManager.displayName(session))
         Task {
             await IntegrationDispatcher.dispatch(session: session, config: config)
         }
+    }
+}
+
+// MARK: - Meeting context
+
+extension PipelineRunner {
+    /// Spin up participant observation for the given session. Started at the
+    /// top of `startRecording` so even the early moments of a meeting are
+    /// captured. Torn down from every path that ends the recording.
+    ///
+    /// No-op when the Zoom enricher is disabled in `config` or when the
+    /// participant cap is set to 0 — avoids background AX polling for users
+    /// who have opted out.
+    private func startParticipantsCapture(for session: URL, config: AppConfig) {
+        guard config.zoomEnricherEnabled, config.maxMeetingParticipants > 0 else {
+            logger.info("zoom enricher disabled (enabled=\(config.zoomEnricherEnabled) cap=\(config.maxMeetingParticipants)) — skipping participant capture")
+            return
+        }
+        participantsWatcher.start()
+        let recorder = SessionParticipantsRecorder(
+            session: session,
+            watcher: participantsWatcher,
+            maxParticipants: config.maxMeetingParticipants,
+        )
+        participantsRecorder = recorder
+        recorder.start()
+    }
+
+    private func stopParticipantsCapture() {
+        participantsRecorder?.stop()
+        participantsRecorder = nil
+        participantsWatcher.stop()
+        stopTitlePolling()
+    }
+
+    /// Poll the Zoom AX topic every 2 s until a title is found. No-op when the Zoom enricher
+    /// is disabled — same contract as `startParticipantsCapture`.
+    ///
+    /// Once a non-nil title is observed it is sticky for the rest of the
+    /// session: later polls that return nil (e.g. the meeting window closed
+    /// before recording stops) do not wipe the UI label.
+    private func startTitlePolling(config: AppConfig) {
+        guard config.zoomEnricherEnabled else { return }
+        titlePollTask?.cancel()
+        if let title = meetingAutoStartContext?.title {
+            applyMeetingTitle(title)
+            return
+        }
+        titlePollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let title = await ZoomTitleReader.meetingTitle()
+                guard !Task.isCancelled else { return }
+                if let title {
+                    self?.applyMeetingTitle(title)
+                    return
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    func applyMeetingTitle(_ title: String) {
+        liveMeetingTitle = title
+        guard meetingAutoStarted, let session = currentSession else { return }
+        SessionManager.setAutomaticName(session, title, source: .zoom)
+    }
+
+    private func stopTitlePolling() {
+        titlePollTask?.cancel()
+        titlePollTask = nil
+        liveMeetingTitle = nil
     }
 }
 

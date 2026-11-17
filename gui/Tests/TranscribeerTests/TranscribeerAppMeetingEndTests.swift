@@ -10,7 +10,6 @@ struct TranscribeerAppMeetingChangeActionTests {
     private func inputs(
         inMeeting: Bool,
         isRecording: Bool = false,
-        isBusy: Bool = false,
         autoRecordEnabled: Bool = true,
         hasCountdown: Bool = false,
         autoStarted: Bool = false,
@@ -19,7 +18,6 @@ struct TranscribeerAppMeetingChangeActionTests {
         Inputs(
             inMeeting: inMeeting,
             isRecording: isRecording,
-            isBusy: isBusy,
             autoRecordEnabled: autoRecordEnabled,
             hasCountdown: hasCountdown,
             autoStarted: autoStarted,
@@ -32,7 +30,7 @@ struct TranscribeerAppMeetingChangeActionTests {
     @Test("Meeting-end during auto-started recording selects stopRecording")
     func endDuringAutoRecordingSelectsStop() {
         let action = TranscribeerApp.meetingChangeAction(
-            inputs(inMeeting: false, isRecording: true, isBusy: true, autoStarted: true),
+            inputs(inMeeting: false, isRecording: true, autoStarted: true),
         )
         #expect(action == .stopRecording)
     }
@@ -40,7 +38,7 @@ struct TranscribeerAppMeetingChangeActionTests {
     @Test("Meeting-end during manually-started recording selects no action")
     func endDuringManualRecordingIsNoop() {
         let action = TranscribeerApp.meetingChangeAction(
-            inputs(inMeeting: false, isRecording: true, isBusy: true, autoStarted: false),
+            inputs(inMeeting: false, isRecording: true, autoStarted: false),
         )
         #expect(action == .noop)
     }
@@ -61,7 +59,6 @@ struct TranscribeerAppMeetingChangeActionTests {
             inputs(
                 inMeeting: false,
                 isRecording: true,
-                isBusy: true,
                 hasCountdown: true,
                 autoStarted: true,
             ),
@@ -97,7 +94,6 @@ struct TranscribeerAppMeetingChangeActionTests {
             inputs(
                 inMeeting: true,
                 isRecording: true,
-                isBusy: true,
                 autoRecordEnabled: false,
                 autoStarted: true,
             ),
