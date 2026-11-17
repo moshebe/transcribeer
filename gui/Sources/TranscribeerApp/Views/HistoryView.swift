@@ -414,7 +414,7 @@ struct HistoryView: View {
         }
     }
 
-    /// Sidebar right-click menu — Reveal in Finder, transcribe/summarize
+    /// Sidebar right-click menu — Reveal in Finder, Copy Path, transcribe/summarize
     /// submenus (`SessionContextActions`), then Delete. Built inline because
     /// `contextMenu` accepts a single `@ViewBuilder` closure and inlining
     /// every item bloats the parent `ForEach`.
@@ -422,6 +422,10 @@ struct HistoryView: View {
     private func contextMenuItems(for session: Session) -> some View {
         Button("Reveal in Finder") {
             NSWorkspace.shared.open(session.path)
+        }
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(session.path.path, forType: .string)
         }
         Divider()
         SessionContextActions(
