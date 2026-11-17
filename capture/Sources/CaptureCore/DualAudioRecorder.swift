@@ -14,16 +14,11 @@ public final class DualAudioRecorder: @unchecked Sendable {
     private let micCapture = MicCapture()
     private let sysCapture = SystemAudioCapture()
 
-    private let stateLock = OSAllocatedUnfairLock<State>(uncheckedState: State())
+    private let stateLock: OSAllocatedUnfairLock<State>
 
     private struct State {
-        var micFile: AVAudioFile?
-        var sysFile: AVAudioFile?
-        var micAnchor: Date?
-        var sysAnchor: Date?
-        var sysEndFrame: Int64 = 0
-        var sysEndDate: Date?
-        var sysDeclaredRate: Double = 0
+        var mic: SourceTrackWriter
+        var sys: SourceTrackWriter
     }
 
     private var micTask: Task<Void, Never>?
@@ -36,6 +31,10 @@ public final class DualAudioRecorder: @unchecked Sendable {
 
     public init(sessionDir: URL) {
         self.sessionDir = sessionDir
+        stateLock = OSAllocatedUnfairLock(uncheckedState: State(
+            mic: SourceTrackWriter(url: sessionDir.appendingPathComponent("audio.mic.caf")),
+            sys: SourceTrackWriter(url: sessionDir.appendingPathComponent("audio.sys.caf"))
+        ))
     }
 
     // MARK: - Public API
@@ -68,14 +67,14 @@ public final class DualAudioRecorder: @unchecked Sendable {
         }
 
         micTask = Task { [self] in
-            for await buffer in micStream {
-                writeMic(buffer)
+            for await captured in micStream {
+                writeMic(captured.buffer, generation: captured.generation)
             }
         }
 
         sysTask = Task { [self] in
-            for await buffer in sysStreams.systemAudio {
-                writeSys(buffer)
+            for await captured in sysStreams.systemAudio {
+                writeSys(captured.buffer, generation: captured.generation)
             }
         }
     }
@@ -92,23 +91,14 @@ public final class DualAudioRecorder: @unchecked Sendable {
         await sysCapture.stop()
 
         return stateLock.withLock { state in
-            state.micFile = nil
-            state.sysFile = nil
+            state.mic.close()
+            state.sys.close()
 
             var meta = TimingMetadata()
-            if let anchor = state.micAnchor {
-                meta.micStartEpoch = anchor.timeIntervalSince1970
-            }
-            if let anchor = state.sysAnchor {
-                meta.sysStartEpoch = anchor.timeIntervalSince1970
-            }
-            meta.sysDeclaredSampleRate = state.sysDeclaredRate
-            if let endDate = state.sysEndDate,
-               let anchor = state.sysAnchor,
-               state.sysEndFrame > 0 {
-                meta.sysEffectiveSampleRate =
-                    Double(state.sysEndFrame) / endDate.timeIntervalSince(anchor)
-            }
+            meta.micStartEpoch = state.mic.anchor?.timeIntervalSince1970
+            meta.sysStartEpoch = state.sys.anchor?.timeIntervalSince1970
+            meta.sysDeclaredSampleRate = state.sys.fileSampleRate
+            meta.sysEffectiveSampleRate = Self.effectiveSampleRate(of: state.sys)
             return meta
         }
     }
@@ -120,115 +110,25 @@ public final class DualAudioRecorder: @unchecked Sendable {
     /// needing Core Audio hardware; normal capture uses the async stream
     /// path started by `start()`.
     @_spi(Testing)
-    public func writeMic(_ buffer: AVAudioPCMBuffer) {
-        let mono = buffer.format.channelCount > 1
-            ? (downmixToMono(buffer) ?? buffer)
-            : buffer
-
-        stateLock.withLock { state in
-            if state.micAnchor == nil {
-                state.micAnchor = Date()
-                openMicFile(format: mono.format, state: &state)
-            }
-
-            guard let file = state.micFile else { return }
-
-            do {
-                try file.write(from: mono)
-            } catch {
-                logger.error("mic write failed: \(error.localizedDescription)")
-            }
-        }
+    public func writeMic(_ buffer: AVAudioPCMBuffer, at date: Date = Date(), generation: Int = 0) {
+        stateLock.withLock { $0.mic.write(buffer, at: date, generation: generation) }
     }
 
     /// Append a sys PCM buffer. See `writeMic` for the SPI rationale.
     @_spi(Testing)
-    public func writeSys(_ buffer: AVAudioPCMBuffer) {
-        stateLock.withLock { state in
-            if state.sysAnchor == nil {
-                state.sysAnchor = Date()
-                state.sysDeclaredRate = buffer.format.sampleRate
-                openSysFile(format: buffer.format, state: &state)
-            }
-
-            guard let file = state.sysFile else { return }
-
-            state.sysEndFrame += Int64(buffer.frameLength)
-            state.sysEndDate = Date()
-
-            do {
-                try file.write(from: buffer)
-            } catch {
-                logger.error("sys write failed: \(error.localizedDescription)")
-            }
-        }
+    public func writeSys(_ buffer: AVAudioPCMBuffer, at date: Date = Date(), generation: Int = 0) {
+        stateLock.withLock { $0.sys.write(buffer, at: date, generation: generation) }
     }
 
-    // MARK: - Private helpers
-
-    private func openMicFile(format: AVAudioFormat, state: inout State) {
-        let url = sessionDir.appendingPathComponent("audio.mic.caf")
-        do {
-            state.micFile = try AVAudioFile(
-                forWriting: url,
-                settings: cafSettings(from: format),
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-        } catch {
-            logger.error("Failed to open mic CAF: \(error.localizedDescription)")
-        }
-    }
-
-    private func openSysFile(format: AVAudioFormat, state: inout State) {
-        let url = sessionDir.appendingPathComponent("audio.sys.caf")
-        do {
-            state.sysFile = try AVAudioFile(
-                forWriting: url,
-                settings: cafSettings(from: format),
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-        } catch {
-            logger.error("Failed to open sys CAF: \(error.localizedDescription)")
-        }
-    }
-
-    private func cafSettings(from format: AVAudioFormat) -> [String: Any] {
-        [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: format.channelCount,
-        ]
-    }
-
-    private func downmixToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let monoFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: buffer.format.sampleRate,
-            channels: 1,
-            interleaved: false
-        ),
-              let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: buffer.frameLength),
-              let srcData = buffer.floatChannelData,
-              let dstData = mono.floatChannelData
-        else {
-            return nil
-        }
-        mono.frameLength = buffer.frameLength
-
-        let chCount = Int(buffer.format.channelCount)
-        let frames = Int(buffer.frameLength)
-        let dst = dstData[0]
-
-        for frame in 0..<frames {
-            var sum: Float = 0
-            for ch in 0..<chCount {
-                sum += srcData[ch][frame]
-            }
-            dst[frame] = sum / Float(chCount)
-        }
-
-        return mono
+    /// The rate the device actually delivered, measured over captured audio
+    /// only: rebuild gaps and their (capped) padding are excluded, so a long
+    /// outage can't skew the drift correction for the whole track. Returns 0
+    /// (trust the declared rate) when under a second was captured.
+    static func effectiveSampleRate(of track: SourceTrackWriter) -> Double {
+        guard let endDate = track.lastWriteDate, let anchor = track.anchor else { return 0 }
+        let capturedSeconds = endDate.timeIntervalSince(anchor) - track.gapSeconds
+        let capturedFrames = track.framesWritten - track.paddedFrames
+        guard capturedSeconds >= 1, capturedFrames > 0 else { return 0 }
+        return Double(capturedFrames) / capturedSeconds
     }
 }
