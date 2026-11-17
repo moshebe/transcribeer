@@ -383,7 +383,7 @@ struct HistoryView: View {
             ForEach(groupedSessions, id: \.title) { group in
                 Section(group.title) {
                     ForEach(group.sessions) { session in
-                        SessionRow(session: session)
+                        SessionRow(session: session, queuePosition: runner.queuePosition(of: session.path))
                             .tag(session.id)
                             .contextMenu { contextMenuItems(for: session) }
                     }
@@ -438,6 +438,11 @@ struct HistoryView: View {
             onTranscribe: { transcribe(session: session, request: $0) },
             onSummarize: { summarize(session: session, request: $0) }
         )
+        if runner.queuePosition(of: session.path) != nil {
+            Button("Remove from Queue") {
+                runner.removeFromQueue(session.path)
+            }
+        }
         Divider()
         Button(deleteMenuTitle(for: session), role: .destructive) {
             sessionsPendingDeletion = deletionTargets(for: session)
@@ -634,7 +639,7 @@ struct HistoryView: View {
     // mirror the original closure wiring; the `selectedSessionID` check is
     // a backstop — the primary refresh is `onChange(of: runner.…Session)`.
     private func transcribe(session: Session, request: SessionDetailView.TranscribeRequest) {
-        statusText = ""
+        statusText = runner.isProcessingActive ? "Queued…" : ""
         let target = session.path
         Task {
             let result = await runner.transcribeSession(
@@ -649,7 +654,7 @@ struct HistoryView: View {
     }
 
     private func summarize(session: Session, request: SessionDetailView.SummaryRequest) {
-        statusText = "Summarizing…"
+        statusText = runner.isProcessingActive ? "Queued…" : "Summarizing…"
         let target = session.path
         let overrides = PipelineRunner.SummarizeOverrides(
             backend: request.backend,

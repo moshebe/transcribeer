@@ -229,35 +229,6 @@ struct TranscribeerApp: App {
 
     @Environment(\.openWindow) private var openWindow
 
-    /// Shown while earlier recordings are processing: how many are still
-    /// waiting, and a way to start the next meeting's recording right away.
-    @ViewBuilder
-    private var recordWhileProcessingItems: some View {
-        if runner.queuedSessionCount > 0 {
-            Text("\(runner.queuedSessionCount) more waiting to process")
-        }
-        Divider()
-        Button(meetingDetector.inMeeting
-            ? "⏺ Record \(meetingDetector.detectedApp?.name ?? "Meeting")"
-            : "Start Recording"
-        ) {
-            startRecording(autoStarted: false)
-        }
-    }
-
-    /// Open the pipeline-sheet window when the runner enters a state that
-    /// requires user input. The window hosts `PipelineSheetWindow` which
-    /// renders the appropriate sheet based on runner state.
-    private func openPipelineSheetWindowIfNeeded(_ state: AppState) {
-        switch state {
-        case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation:
-            NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "pipeline-sheet")
-        default:
-            break
-        }
-    }
-
     // MARK: - Lifecycle
 
     /// How often opt-in retention re-checks old sessions while the app runs.
@@ -575,5 +546,38 @@ private extension TranscribeerApp {
             freed=\(report.bytesFreed, privacy: .public) failures=\(report.failed.count, privacy: .public)
             """
         )
+    }
+}
+
+// MARK: - Menu helpers
+
+extension TranscribeerApp {
+    /// Shown while earlier recordings are processing: how many are still
+    /// waiting, and a way to start the next meeting's recording right away.
+    @ViewBuilder
+    private var recordWhileProcessingItems: some View {
+        if runner.queuedSessionCount > 0 {
+            Text("\(runner.queuedSessionCount) more waiting to process")
+        }
+        Divider()
+        Button(meetingDetector.inMeeting
+            ? "⏺ Record \(meetingDetector.detectedApp?.name ?? "Meeting")"
+            : "Start Recording"
+        ) {
+            startRecording(autoStarted: false)
+        }
+    }
+
+    /// Open the pipeline-sheet window when the runner enters a state that
+    /// requires user input. The window hosts `PipelineSheetWindow` which
+    /// renders the appropriate sheet based on runner state.
+    private func openPipelineSheetWindowIfNeeded(_ state: AppState) {
+        switch state {
+        case .awaitingPostRecordingChoice, .awaitingLongRecordingConfirmation:
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "pipeline-sheet")
+        default:
+            break
+        }
     }
 }

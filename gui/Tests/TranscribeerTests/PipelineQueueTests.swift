@@ -87,4 +87,55 @@ struct PipelineQueueTests {
 
         #expect(runner.state == recording)
     }
+
+    // MARK: - Queue contents
+
+    private func job(_ session: URL, _ job: QueuedSession.Job, results: Box) -> QueuedSession {
+        QueuedSession(session: session, config: AppConfig(), job: job) { results.values.append($0) }
+    }
+
+    /// Collects job results; the queue calls completions on the main actor.
+    private final class Box {
+        var values: [PipelineRunner.CLIResult] = []
+    }
+
+    @Test("A duplicate job for the same session and kind is rejected")
+    func duplicateJobRejected() async {
+        let runner = PipelineRunner()
+        let results = Box()
+        let session = URL(fileURLWithPath: "/tmp/queued-a")
+        let transcribe = QueuedSession.Job.transcribe(languageOverride: nil, backendOverride: nil)
+
+        #expect(runner.enqueueProcessing(job(session, transcribe, results: results)))
+        #expect(!runner.enqueueProcessing(job(session, transcribe, results: results)))
+        #expect(runner.enqueueProcessing(job(session, .summarize(profile: nil, overrides: .init()), results: results)))
+        #expect(runner.queuedSessionCount == 2)
+
+        runner.removeFromQueue(session)
+        await runner.queueWorker?.value
+    }
+
+    @Test("Waiting jobs report their position and can be removed")
+    func removeFromQueue() async {
+        let runner = PipelineRunner()
+        let results = Box()
+        let first = URL(fileURLWithPath: "/tmp/queued-1")
+        let second = URL(fileURLWithPath: "/tmp/queued-2")
+        let transcribe = QueuedSession.Job.transcribe(languageOverride: nil, backendOverride: nil)
+        runner.enqueueProcessing(job(first, transcribe, results: results))
+        runner.enqueueProcessing(job(second, transcribe, results: results))
+
+        #expect(runner.queuePosition(of: first) == 1)
+        #expect(runner.queuePosition(of: second) == 2)
+
+        runner.removeFromQueue(first)
+
+        #expect(runner.queuePosition(of: first) == nil)
+        #expect(runner.queuePosition(of: second) == 1)
+        #expect(results.values.map(\.error) == ["Cancelled"])
+
+        runner.removeFromQueue(second)
+        await runner.queueWorker?.value
+        #expect(runner.queueWorker == nil)
+    }
 }

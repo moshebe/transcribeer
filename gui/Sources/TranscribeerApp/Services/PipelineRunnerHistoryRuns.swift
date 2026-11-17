@@ -15,7 +15,9 @@ extension PipelineRunner {
         let error: String
     }
 
-    /// Re-transcribe a session from its audio.
+    /// Re-transcribe a session from its audio. Queued behind any recording or
+    /// re-run already processing, so two jobs never share the transcription
+    /// service; returns "Already queued" for a duplicate request.
     ///
     /// `languageOverride` wins over `config.language` when non-nil; same
     /// for `backendOverride` against `config.transcriptionBackend`. The
@@ -28,6 +30,20 @@ extension PipelineRunner {
         config: AppConfig,
         languageOverride: String? = nil,
         backendOverride: String? = nil
+    ) async -> CLIResult {
+        await runQueued(
+            session,
+            config: config,
+            job: .transcribe(languageOverride: languageOverride, backendOverride: backendOverride),
+        )
+    }
+
+    /// Body of a queued re-transcribe job.
+    func runTranscribeJob(
+        _ session: URL,
+        config: AppConfig,
+        languageOverride: String?,
+        backendOverride: String?
     ) async -> CLIResult {
         let txPath = session.appendingPathComponent("transcript.txt")
         var cfg = config
@@ -50,6 +66,7 @@ extension PipelineRunner {
             "re-transcribe start lang=\(cfg.language) backend=\(cfg.transcriptionBackend)"
         )
 
+        await waitForRecordingToEnd(if: TranscriptionBackend.from(cfg.transcriptionBackend).isLocal)
         // Goes through the processing state so a recording started meanwhile
         // keeps the UI (and its Stop button).
         let previousState = processingState
@@ -125,12 +142,22 @@ extension PipelineRunner {
         var language: TranscriptionLanguage?
     }
 
-    /// Re-summarize a session from its transcript.
+    /// Re-summarize a session from its transcript. Queued like `transcribeSession`.
     func summarizeSession(
         _ session: URL,
         config: AppConfig,
         profile: String?,
         overrides: SummarizeOverrides = .init()
+    ) async -> CLIResult {
+        await runQueued(session, config: config, job: .summarize(profile: profile, overrides: overrides))
+    }
+
+    /// Body of a queued re-summarize job.
+    func runSummarizeJob(
+        _ session: URL,
+        config: AppConfig,
+        profile: String?,
+        overrides: SummarizeOverrides
     ) async -> CLIResult {
         let txPath = session.appendingPathComponent("transcript.txt")
         let smPath = session.appendingPathComponent("summary.md")
@@ -144,6 +171,7 @@ extension PipelineRunner {
             "re-summarize: \(txPath.path) backend=\(effectiveConfig.llmBackend) model=\(effectiveConfig.llmModel)"
         )
 
+        await waitForRecordingToEnd(if: effectiveConfig.llmBackend == LLMBackend.ollama.rawValue)
         let previousState = processingState
         setProcessingState(.summarizing)
         isCancelling = false

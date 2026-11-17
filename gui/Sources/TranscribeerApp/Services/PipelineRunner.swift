@@ -100,8 +100,13 @@ final class PipelineRunner {
     private(set) var pendingLongRecordingDuration: TimeInterval?
     @ObservationIgnored private var longRecordingContinuation: CheckedContinuation<Bool, Never>?
 
+    /// True while the recording that just ended waits for the user to answer
+    /// the post-recording prompt or the long-recording check.
+    var isAwaitingRecordingAnswer: Bool {
+        postRecordingSessionName != nil || pendingLongRecordingDuration != nil
+    }
+
     private var recordingTask: Task<Void, Never>?
-    private var processingTask: Task<Void, Never>?
 
     // MARK: - Processing queue
 
@@ -110,8 +115,9 @@ final class PipelineRunner {
     var processingQueue: [QueuedSession] = []
     /// Processes `processingQueue` one session at a time; nil when drained.
     var queueWorker: Task<Void, Never>?
-    /// The session currently being processed, cancelled by `cancelProcessing`.
-    var processingItemTask: Task<Void, Never>?
+    /// The job currently running, and its task (cancelled by `cancelProcessing`).
+    var processingItem: QueuedSession?
+    var processingItemTask: Task<CLIResult, Never>?
     /// Phase of the processing queue. Mirrored into `state` whenever no
     /// recording is in progress, and restored when one ends.
     var processingState: AppState = .idle
@@ -137,6 +143,7 @@ final class PipelineRunner {
     /// audio that isn't captured is lost for good, processing can wait.
     func startRecording(config: AppConfig) {
         guard !state.isRecording else { return }
+        answerPendingQuestionsForNewRecording()
 
         let session = SessionManager.newSession(sessionsDir: config.expandedSessionsDir)
         currentSession = session
@@ -164,7 +171,7 @@ final class PipelineRunner {
     /// Cancel an in-flight transcription or summarization. Does nothing while
     /// recording (use `stopRecording` for that).
     ///
-    /// Cancellation is cooperative: `pipelineTask.cancel()` propagates through
+    /// Cancellation is cooperative: `processingItemTask.cancel()` propagates through
     /// the structured task tree, and WhisperKit / HubApi check
     /// `Task.isCancelled` at various checkpoints. The CoreML model compile +
     /// prewarm step has no cancellation hook, so during that phase the pipeline
@@ -175,7 +182,6 @@ final class PipelineRunner {
         case .transcribing, .summarizing:
             isCancelling = true
             transcriptionService.cancel()
-            processingTask?.cancel()
             processingItemTask?.cancel()
             summarizeTask?.cancel()
             summarizeTask = nil
@@ -233,37 +239,83 @@ final class PipelineRunner {
             // Stamp the wall-clock end of the capture so the sidebar can
             // show a "10:30 – 11:15" range for calendar correlation.
             await stampRecordingEnd(session, startedAt: startedAt, config: config, log: logger.log)
-            if queueWorker != nil {
-                logger.log("queued behind \(processingQueue.count + 1) session(s) still processing")
-            }
-            // Hand the UI back to whatever is still processing, then queue.
-            state = isProcessingActive ? processingState : .idle
-            enqueueProcessing(QueuedSession(session: session, config: config))
+            await handOffRecording(session, config: config, logger: logger)
         }
     }
 
-    /// Transcribe and summarize one finished recording, per `config`.
-    func processSession(_ session: URL, config: AppConfig) async {
+    /// Decide what to do with a finished recording while still in the
+    /// recording lane — the post-recording prompt and the long-recording check
+    /// are asked now, not when the job reaches the front of the queue, so an
+    /// unanswered question never stalls the queue. Then queue the work.
+    private func handOffRecording(_ session: URL, config: AppConfig, logger: SessionLogger) async {
+        let plan = await recordingPlan(for: session, config: config, logger: logger)
+        // Hand the UI back to whatever is still processing, unless the next
+        // recording has already taken it.
+        if !state.isRecording {
+            state = isProcessingActive ? processingState : .idle
+        }
+        switch plan {
+        case .discard:
+            try? FileManager.default.removeItem(at: session)
+        case .saveOnly:
+            // Don't replace the queue's phase with "done" for this one.
+            await finishSession(session, config: config, showDone: !isProcessingActive)
+        case .transcribe(let summarize):
+            if queueWorker != nil {
+                logger.log("queued behind \(processingQueue.count + 1) job(s) still processing")
+            }
+            enqueueProcessing(QueuedSession(session: session, config: config, job: .recording(summarize: summarize)))
+        }
+    }
+
+    private enum RecordingPlan: Equatable {
+        case discard, saveOnly
+        case transcribe(summarize: Bool)
+    }
+
+    private func recordingPlan(for session: URL, config: AppConfig, logger: SessionLogger) async -> RecordingPlan {
+        guard config.pipelineMode != "record-only" else { return .saveOnly }
+        let duration = await Self.audioDuration(session)
+        var summarize = config.pipelineMode != "record+transcribe"
+
+        // Track 4.3 — prompt-on-stop. Not asked once the next recording has
+        // started: it owns the UI.
+        if config.promptOnStop, !state.isRecording {
+            switch await askPostRecordingChoice(session: session, duration: duration) {
+            case .discard:
+                logger.log("post-recording: discard")
+                return .discard
+            case .saveOnly:
+                logger.log("post-recording: save-only")
+                return .saveOnly
+            case .transcribeOnly:
+                logger.log("post-recording: transcribe-only")
+                summarize = false
+            case .transcribeAndSummarize:
+                logger.log("post-recording: transcribe-and-summarize")
+            }
+        }
+
+        // Track 4.5 — long-recording confirmation. Skipped without asking once
+        // the next recording has started; it can be summarized from History.
+        let threshold = Double(config.longRecordingThresholdMinutes) * 60
+        if summarize, threshold > 0, duration > threshold {
+            summarize = state.isRecording ? false : await askLongRecordingConfirmation(duration: duration)
+            logger.log("long-recording: summarization \(summarize ? "confirmed" : "skipped")")
+        }
+        return .transcribe(summarize: summarize)
+    }
+
+    private static func audioDuration(_ session: URL) async -> TimeInterval {
+        let audioURL = session.appendingPathComponent("audio.m4a")
+        return (try? await AVURLAsset(url: audioURL).load(.duration))?.seconds ?? 0
+    }
+
+    /// Transcribe, and summarize when `summarize`, one finished recording.
+    func processSession(_ session: URL, config: AppConfig, summarize: Bool) async {
         let transcriptPath = session.appendingPathComponent("transcript.txt")
         let summaryPath = session.appendingPathComponent("summary.md")
         let logger = SessionLogger(logPath: session.appendingPathComponent("run.log"))
-
-        if config.pipelineMode == "record-only" {
-            await finishSession(session, config: config)
-            return
-        }
-
-        // Track 4.3 — prompt-on-stop: ask user what to do before running pipeline.
-        // Returns false when the choice handled the pipeline end (discard/save/transcribe-only).
-        if config.promptOnStop {
-            let shouldContinue = await handlePostRecordingPrompt(
-                session: session,
-                transcriptPath: transcriptPath,
-                config: config,
-                logger: logger
-            )
-            guard shouldContinue else { return }
-        }
 
         // Transcribe (WhisperKit + SpeakerKit)
         guard await performTranscription(
@@ -273,7 +325,7 @@ final class PipelineRunner {
             logger: logger
         ) else { return }
 
-        if config.pipelineMode == "record+transcribe" {
+        guard summarize else {
             await finishSession(session, config: config)
             return
         }
@@ -292,57 +344,40 @@ final class PipelineRunner {
 
     // MARK: - Track 4.3 post-recording prompt
 
-    /// Suspends the pipeline until the user picks an action.
-    /// Returns `true` if the pipeline should proceed to transcription+summarization,
-    /// `false` if the choice already terminated the pipeline (discard/save/transcribe-only).
-    private func handlePostRecordingPrompt(
-        session: URL,
-        transcriptPath: URL,
-        config: AppConfig,
-        logger: SessionLogger
-    ) async -> Bool {
-        let name = SessionManager.displayName(session)
-        let audioURL = session.appendingPathComponent("audio.m4a")
-        let duration: TimeInterval
-        if let asset = try? await AVURLAsset(url: audioURL).load(.duration) {
-            duration = asset.seconds
-        } else {
-            duration = 0
-        }
-
+    /// Suspends the recording lane until the user picks an action.
+    private func askPostRecordingChoice(session: URL, duration: TimeInterval) async -> PostRecordingChoice {
         let choice = await withCheckedContinuation { (cont: CheckedContinuation<PostRecordingChoice, Never>) in
             postRecordingContinuation = cont
-            postRecordingSessionName = name
+            postRecordingSessionName = SessionManager.displayName(session)
             postRecordingDuration = duration
-            setProcessingState(.awaitingPostRecordingChoice)
+            state = .awaitingPostRecordingChoice
         }
-
         postRecordingSessionName = nil
         postRecordingDuration = 0
+        return choice
+    }
 
-        switch choice {
-        case .discard:
-            logger.log("post-recording: discard")
-            try? FileManager.default.removeItem(at: session)
-            setProcessingState(.idle)
-            return false
-        case .saveOnly:
-            logger.log("post-recording: save-only")
-            await finishSession(session, config: config)
-            return false
-        case .transcribeOnly:
-            logger.log("post-recording: transcribe-only")
-            guard await performTranscription(
-                config: config,
-                session: session,
-                transcriptPath: transcriptPath,
-                logger: logger
-            ) else { return false }
-            await finishSession(session, config: config)
-            return false
-        case .transcribeAndSummarize:
-            logger.log("post-recording: transcribe-and-summarize")
-            return true
+    /// Suspends the recording lane until the user confirms (or skips)
+    /// summarizing a long recording.
+    private func askLongRecordingConfirmation(duration: TimeInterval) async -> Bool {
+        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            longRecordingContinuation = cont
+            pendingLongRecordingDuration = duration
+            state = .awaitingLongRecordingConfirmation
+        }
+    }
+
+    /// A new recording takes the UI, so answer any question still pending for
+    /// the previous one: process it as if there were no prompt, but skip the
+    /// summary of a long recording (it can be summarized from History).
+    private func answerPendingQuestionsForNewRecording() {
+        if postRecordingContinuation != nil {
+            appendRunLog("post-recording: unanswered when the next recording started")
+            resolvePostRecordingChoice(.transcribeAndSummarize)
+        }
+        if longRecordingContinuation != nil {
+            appendRunLog("long-recording: unanswered when the next recording started")
+            confirmLongRecording(false)
         }
     }
 
@@ -432,27 +467,6 @@ final class PipelineRunner {
         session: URL,
         logger: SessionLogger
     ) async {
-        // Track 4.5 — long-recording confirmation gate
-        if config.longRecordingThresholdMinutes > 0 {
-            let audioURL = session.appendingPathComponent("audio.m4a")
-            if let cmDuration = try? await AVURLAsset(url: audioURL).load(.duration) {
-                let seconds = cmDuration.seconds
-                let thresholdSeconds = Double(config.longRecordingThresholdMinutes) * 60
-                if seconds > thresholdSeconds {
-                    let shouldSummarize = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                        longRecordingContinuation = cont
-                        pendingLongRecordingDuration = seconds
-                        setProcessingState(.awaitingLongRecordingConfirmation)
-                    }
-                    if !shouldSummarize {
-                        logger.log("long-recording: user skipped summarization")
-                        return
-                    }
-                    logger.log("long-recording: user confirmed summarization")
-                }
-            }
-        }
-
         await waitForRecordingToEnd(if: config.llmBackend == LLMBackend.ollama.rawValue, logger: logger)
         setProcessingState(.summarizing)
         logger.log("summarization started backend=\(config.llmBackend) model=\(config.llmModel) profile=\(promptProfile ?? "default")")
@@ -527,12 +541,14 @@ final class PipelineRunner {
         return accumulated
     }
 
-    private func finishSession(_ session: URL, config: AppConfig) async {
+    private func finishSession(_ session: URL, config: AppConfig, showDone: Bool = true) async {
         // Compact the raw capture sidecars before announcing `.done`, so a
         // re-transcribe triggered off the finished session never resolves a
         // raw `.caf` that compaction is about to delete.
         await compactSourceSidecars(in: session, ffmpegPath: config.audio.ffmpegPath)
-        setProcessingState(.done(sessionPath: session.path))
+        if showDone {
+            setProcessingState(.done(sessionPath: session.path))
+        }
         NotificationManager.notifyDone(sessionName: SessionManager.displayName(session))
         Task {
             await IntegrationDispatcher.dispatch(session: session, config: config)
