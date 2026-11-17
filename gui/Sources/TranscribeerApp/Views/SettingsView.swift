@@ -45,6 +45,9 @@ struct SettingsView: View {
             Tab("Integrations", systemImage: "link") {
                 IntegrationsSettingsView(config: $config, save: save)
             }
+            Tab("Storage", systemImage: "internaldrive") {
+                StorageSettingsView(config: $config, save: save)
+            }
         }
         .frame(width: 640, height: 460)
         .overlay(alignment: .bottomLeading) {

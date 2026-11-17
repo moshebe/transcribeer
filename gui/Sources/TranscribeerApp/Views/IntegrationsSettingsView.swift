@@ -55,12 +55,24 @@ struct IntegrationsSettingsView: View {
                         chooseExportFolder()
                     }
                     .disabled(!config.integrations.exportFolderEnabled)
+
+                    cloudFolderMenu
+                        .disabled(!config.integrations.exportFolderEnabled)
                 }
+
+                Toggle("Include the audio recording", isOn: Binding(
+                    get: { config.integrations.exportIncludeAudio },
+                    set: { config.integrations.exportIncludeAudio = $0; save() }
+                ))
+                .disabled(!config.integrations.exportFolderEnabled)
             } header: {
-                Text("Meeting Notes Folder")
+                Text("Meeting Notes Folder & Backup")
             } footer: {
-                Text("Writes YYYY-MM-DD-<name>-summary.md and -transcript.md after each recording, "
-                    + "re-transcribe and re-summarize. Older exports of the same session are replaced.")
+                Text("Writes YYYY-MM-DD-<name>-summary.md and -transcript.md (plus -audio.m4a when "
+                    + "included) after each recording, re-transcribe and re-summarize. Older exports of "
+                    + "the same session are replaced. Pick an iCloud Drive or Google Drive folder to back "
+                    + "up your meetings — the provider's app uploads them. Meeting audio may be subject "
+                    + "to your company's data policy.")
                     .foregroundStyle(.secondary)
             }
 
@@ -132,6 +144,27 @@ struct IntegrationsSettingsView: View {
     private func chooseExportFolder() {
         guard let url = chooseFolder(message: "Select the folder for meeting notes") else { return }
         config.integrations.exportFolderPath = url.path
+        save()
+    }
+
+    /// One-click destinations in folders synced by iCloud Drive, Google
+    /// Drive and other cloud apps. Hidden when none are installed.
+    @ViewBuilder
+    private var cloudFolderMenu: some View {
+        let suggestions = CloudFolders.suggestions()
+        if !suggestions.isEmpty {
+            Menu("Cloud folder") {
+                ForEach(suggestions) { suggestion in
+                    Button(suggestion.name) { useCloudFolder(suggestion) }
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    private func useCloudFolder(_ suggestion: CloudFolders.Suggestion) {
+        try? FileManager.default.createDirectory(at: suggestion.url, withIntermediateDirectories: true)
+        config.integrations.exportFolderPath = suggestion.url.path
         save()
     }
 

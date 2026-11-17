@@ -240,6 +240,26 @@ struct TranscribeerApp: App {
 
     // MARK: - Lifecycle
 
+    /// How often opt-in retention re-checks old sessions while the app runs.
+    private static let retentionInterval: Duration = .seconds(6 * 3600)
+
+    /// Apply the retention policy at launch and then periodically. Re-reads
+    /// config each pass so toggling it in Settings takes effect without a
+    /// relaunch; the sweep itself runs off the main actor.
+    private func runRetentionPeriodically() async {
+        while !Task.isCancelled {
+            let config = ConfigManager.load()
+            if config.retention.enabled {
+                let sessionsDir = config.expandedSessionsDir
+                let settings = config.retention
+                await Task.detached(priority: .utility) {
+                    RetentionService.sweep(sessionsDir: sessionsDir, settings: settings)
+                }.value
+            }
+            try? await Task.sleep(for: Self.retentionInterval)
+        }
+    }
+
     private func onFirstAppear() {
         let sessionsDir = config.expandedSessionsDir
         let ffmpegPath = config.audio.ffmpegPath
@@ -252,6 +272,7 @@ struct TranscribeerApp: App {
         Task {
             await maintainHistoricalAudioSidecars(sessionsDir: sessionsDir, ffmpegPath: ffmpegPath)
         }
+        Task { await runRetentionPeriodically() }
         runner.transcriptionService.resourceGovernor = resourceGovernor
         resourceGovernor.isThrottlingDisabled = config.disableReducedPerformanceMode
         meetingDetector.start()
