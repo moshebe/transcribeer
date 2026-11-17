@@ -194,6 +194,85 @@ struct CalendarEnricherTests {
         #expect(SessionManager.readCalendarEvent(dir) == nil)
     }
 
+    @Test("no calendar access is reported and keeps an earlier match")
+    func noAccessKeepsMatch() async throws {
+        let dir = try Self.makeSessionDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        SessionManager.setCalendarEvent(dir, Self.oneOnOne, stage: .start)
+
+        let line = await CalendarEnricher.enrich(
+            session: dir,
+            start: CalendarEventMatcherTests.at(38),
+            end: CalendarEventMatcherTests.at(61),
+            stage: .stop,
+            config: Self.enabledConfig,
+            events: { _ in nil },
+        )
+
+        #expect(line?.contains("no calendar access") == true)
+        #expect(SessionManager.readCalendarEvent(dir) == Self.oneOnOne)
+    }
+
+    @Test("a start match that finishes after stop does not overwrite the stop match")
+    func lateStartMatchIsSkipped() async throws {
+        let dir = try Self.makeSessionDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let other = CalendarEventMatcherTests.event("Other", from: 30, to: 55)
+        SessionManager.setRecordingTimes(
+            dir,
+            startedAt: CalendarEventMatcherTests.at(38),
+            endedAt: CalendarEventMatcherTests.at(61),
+        )
+        SessionManager.setCalendarEvent(dir, Self.oneOnOne, stage: .stop)
+
+        let line = await CalendarEnricher.enrich(
+            session: dir,
+            start: CalendarEventMatcherTests.at(38),
+            end: nil,
+            stage: .start,
+            config: Self.enabledConfig,
+            events: { _ in [other] },
+        )
+
+        #expect(line?.contains("already stopped") == true)
+        #expect(SessionManager.readCalendarEvent(dir) == Self.oneOnOne)
+    }
+
+    @Test("clearing a calendar name restores the Zoom topic it replaced")
+    func clearRestoresZoomName() throws {
+        let dir = try Self.makeSessionDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        SessionManager.setAutomaticName(dir, "Zoom topic", source: .zoom)
+        SessionManager.setAutomaticName(dir, "Event", source: .calendar)
+        #expect(SessionManager.displayName(dir) == "Event")
+
+        #expect(SessionManager.clearCalendarMatch(dir))
+        #expect(SessionManager.displayName(dir) == "Zoom topic")
+        #expect(SessionManager.readMeta(dir)["name_source"] as? String == "zoom")
+        #expect(SessionManager.readMeta(dir)["replaced_name"] == nil)
+    }
+
+    @Test("calendar_event decodes dates without fractional seconds")
+    func plainDates() throws {
+        let dict: [String: Any] = ["title": "Sync", "start": "2026-11-11T14:30:00Z", "end": "2026-11-11T14:55:00Z"]
+        let event = try #require(CalendarEvent(dict: dict, using: SessionManager.isoFormatter))
+        #expect(event.end.timeIntervalSince(event.start) == 25 * 60)
+    }
+
+    @Test("selfStatus without an own attendee entry", arguments: [
+        (true, true, CalendarEvent.ResponseStatus.accepted),
+        (false, false, .accepted),
+        (false, true, .unknown),
+    ])
+    func selfStatusWithoutEntry(isOrganizer: Bool, hasAttendees: Bool, expected: CalendarEvent.ResponseStatus) {
+        let status = CalendarEventReader.selfStatus(
+            ownEntry: nil,
+            isOrganizer: isOrganizer,
+            hasAttendees: hasAttendees,
+        )
+        #expect(status == expected)
+    }
+
     // MARK: - EventKit mapping helpers
 
     @Test("email(fromParticipantURL:)", arguments: [

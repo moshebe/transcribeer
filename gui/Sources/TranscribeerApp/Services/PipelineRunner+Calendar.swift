@@ -6,7 +6,7 @@ extension PipelineRunner {
     /// `runPipeline` refines it with the full window.
     func startCalendarMatch(for session: URL, startedAt: Date, config: AppConfig) {
         guard config.calendarEnricherEnabled else { return }
-        Task { @MainActor [weak self] in
+        Task {
             let line = await CalendarEnricher.enrich(
                 session: session,
                 start: startedAt,
@@ -14,7 +14,7 @@ extension PipelineRunner {
                 stage: .start,
                 config: config,
             )
-            if let line { self?.appendRunLog(line) }
+            if let line { SessionLogger(logPath: session.appendingPathComponent("run.log")).log(line) }
         }
     }
 

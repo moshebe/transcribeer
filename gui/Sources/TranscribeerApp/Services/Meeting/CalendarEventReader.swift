@@ -28,8 +28,9 @@ actor CalendarEventReader {
 
     /// Events that intersect `window`, from calendars whose title contains one
     /// of `calendarNames` (case-insensitive). Empty `calendarNames` = all.
-    func events(in window: DateInterval, calendarNames: [String]) -> [CalendarEvent] {
-        guard Self.isAuthorized else { return [] }
+    /// Returns `nil` without calendar access.
+    func events(in window: DateInterval, calendarNames: [String]) -> [CalendarEvent]? {
+        guard Self.isAuthorized else { return nil }
         let calendars = store.calendars(for: .event).filter { calendar in
             calendarNames.isEmpty || calendarNames.contains { calendar.title.localizedCaseInsensitiveContains($0) }
         }
@@ -42,13 +43,11 @@ actor CalendarEventReader {
 
     private static func makeEvent(_ event: EKEvent) -> CalendarEvent {
         let participants = event.attendees ?? []
-        let me = participants.first(where: \.isCurrentUser)
-        let selfStatus: CalendarEvent.ResponseStatus = if let me {
-            status(me.participantStatus)
-        } else {
-            // No attendee entry for the user: their own event, or one with no guests.
-            .accepted
-        }
+        let selfStatus = selfStatus(
+            ownEntry: participants.first(where: \.isCurrentUser)?.participantStatus,
+            isOrganizer: event.organizer?.isCurrentUser ?? false,
+            hasAttendees: !participants.isEmpty,
+        )
         return CalendarEvent(
             title: event.title ?? "",
             start: event.startDate,
@@ -68,6 +67,19 @@ actor CalendarEventReader {
                     )
                 },
         )
+    }
+
+    /// The user's own response. Without an attendee entry for the user, the
+    /// event is theirs only when they organize it or it has no guests; an
+    /// event with guests but no entry for the user (for example on a
+    /// subscribed calendar of someone else) is `unknown`.
+    static func selfStatus(
+        ownEntry: EKParticipantStatus?,
+        isOrganizer: Bool,
+        hasAttendees: Bool,
+    ) -> CalendarEvent.ResponseStatus {
+        if let ownEntry { return status(ownEntry) }
+        return isOrganizer || !hasAttendees ? .accepted : .unknown
     }
 
     static func status(_ status: EKParticipantStatus) -> CalendarEvent.ResponseStatus {

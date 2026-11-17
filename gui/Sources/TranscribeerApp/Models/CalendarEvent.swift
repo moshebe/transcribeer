@@ -41,6 +41,8 @@ enum CalendarMatchStage: String, Sendable {
 // MARK: - meta.json encoding
 
 extension CalendarEvent {
+    private static let plainISOFormatter = ISO8601DateFormatter()
+
     func dict(matchedAt stage: CalendarMatchStage, using formatter: ISO8601DateFormatter) -> [String: Any] {
         var dict: [String: Any] = [
             "title": title,
@@ -57,10 +59,13 @@ extension CalendarEvent {
         return dict
     }
 
+    /// Accepts ISO-8601 dates with or without fractional seconds.
     init?(dict: [String: Any], using formatter: ISO8601DateFormatter) {
-        guard let title = dict["title"] as? String,
-              let startRaw = dict["start"] as? String, let start = formatter.date(from: startRaw),
-              let endRaw = dict["end"] as? String, let end = formatter.date(from: endRaw)
+        func date(_ key: String) -> Date? {
+            guard let raw = dict[key] as? String else { return nil }
+            return formatter.date(from: raw) ?? Self.plainISOFormatter.date(from: raw)
+        }
+        guard let title = dict["title"] as? String, let start = date("start"), let end = date("end")
         else { return nil }
         self.init(
             title: title,

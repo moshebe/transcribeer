@@ -10,6 +10,8 @@ struct CalendarEnricherSection: View {
 
     @State private var authorized = CalendarEventReader.isAuthorized
     @State private var calendarNamesText = ""
+    /// The toggle's latest state, so a slow access request does not undo a later switch-off.
+    @State private var wantsEnabled = false
 
     private static let privacySettingsURL = URL(
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
@@ -38,6 +40,7 @@ struct CalendarEnricherSection: View {
         }
         .onAppear {
             authorized = CalendarEventReader.isAuthorized
+            wantsEnabled = config.calendarEnricherEnabled
             calendarNamesText = config.calendarNames.joined(separator: ", ")
         }
         .onDisappear(perform: saveCalendarNames)
@@ -60,6 +63,7 @@ struct CalendarEnricherSection: View {
     }
 
     private func setEnabled(_ enabled: Bool) {
+        wantsEnabled = enabled
         guard enabled else {
             config.calendarEnricherEnabled = false
             save()
@@ -68,16 +72,19 @@ struct CalendarEnricherSection: View {
         Task { @MainActor in
             let granted = await CalendarEventReader.shared.requestAccess()
             authorized = granted
+            guard wantsEnabled else { return }
             config.calendarEnricherEnabled = granted
             save()
         }
     }
 
     private func saveCalendarNames() {
-        config.calendarNames = calendarNamesText
+        let names = calendarNamesText
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        guard names != config.calendarNames else { return }
+        config.calendarNames = names
         save()
     }
 }

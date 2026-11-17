@@ -6,7 +6,8 @@ import Foundation
 ///
 /// The events source is injected so tests run without EventKit.
 enum CalendarEnricher {
-    typealias EventsSource = @Sendable (DateInterval) async -> [CalendarEvent]
+    /// Returns `nil` when the calendar cannot be read (no access).
+    typealias EventsSource = @Sendable (DateInterval) async -> [CalendarEvent]?
 
     static func eventsSource(for config: AppConfig) -> EventsSource {
         let names = config.calendarNames
@@ -26,7 +27,13 @@ enum CalendarEnricher {
     ) async -> String? {
         guard config.calendarEnricherEnabled else { return nil }
         let source = events ?? eventsSource(for: config)
-        let candidates = await source(CalendarEventMatcher.recordingWindow(start: start, end: end))
+        guard let candidates = await source(CalendarEventMatcher.recordingWindow(start: start, end: end)) else {
+            return "calendar(\(stage.rawValue)): skipped, no calendar access"
+        }
+        // The stop match is authoritative; a slow start query must not overwrite it.
+        if stage == .start, SessionManager.readMeta(session)["endedAt"] != nil {
+            return "calendar(start): skipped, recording already stopped"
+        }
         guard let match = CalendarEventMatcher.bestMatch(candidates, start: start, end: end) else {
             // A full-window match is authoritative: drop a start-time guess it does not confirm.
             let cleared = stage != .start && SessionManager.clearCalendarMatch(session)

@@ -6,7 +6,7 @@ import TranscribeerCore
 private let logger = Logger(subsystem: "com.transcribeer", category: "pipeline")
 
 /// Appends timestamped lines to a session's `run.log` file.
-private struct SessionLogger {
+struct SessionLogger {
     let logPath: URL
 
     func log(_ message: String) {
