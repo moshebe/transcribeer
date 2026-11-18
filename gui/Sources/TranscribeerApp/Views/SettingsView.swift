@@ -420,17 +420,17 @@ private struct OllamaHostStatus: View {
     }
 
     private var isLocalhost: Bool {
-        guard let url = URL(string: host), let h = url.host else { return false }
+        guard let h = OllamaHost.baseURL(host)?.host else { return false }
         return h == "localhost" || h == "127.0.0.1" || h == "::1"
     }
 
     private var hostDisplay: String {
-        URL(string: host)?.host ?? host
+        OllamaHost.baseURL(host)?.host ?? host
     }
 
     private func runProbe() async {
         probe = .checking
-        guard let base = URL(string: host) else {
+        guard let base = OllamaHost.baseURL(host) else {
             probe = .invalidURL
             return
         }

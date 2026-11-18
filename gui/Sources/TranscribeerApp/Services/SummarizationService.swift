@@ -188,7 +188,7 @@ enum SummarizationService {
     ///
     /// Returns the resolved model because Vertex AI requires a `google/` prefix
     /// that callers shouldn't have to remember.
-    private static func resolveProvider(
+    static func resolveProvider(
         _ backend: LLMBackend,
         model: String,
         ollamaHost: String,
@@ -209,7 +209,10 @@ enum SummarizationService {
             let resolvedModel = model.hasPrefix("google/") ? model : "google/\(model)"
             return (.other(url, apiKey: try GCloudAuth.accessToken()), resolvedModel)
         case .ollama:
-            return (.other(try requireURL("\(ollamaHost)/v1"), apiKey: nil), model)
+            guard let url = OllamaHost.baseURL(ollamaHost) else {
+                throw SummarizationError.invalidOllamaHost(ollamaHost)
+            }
+            return (.other(url, apiKey: nil), model)
         }
     }
 
