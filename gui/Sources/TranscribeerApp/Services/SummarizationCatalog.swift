@@ -105,7 +105,7 @@ enum SummarizationCatalog {
     /// Returns an empty array on any failure — the picker falls back to the
     /// default option, so a missing Ollama daemon doesn't block the UI.
     static func fetchOllamaModels(host: String) async -> [String] {
-        guard let base = URL(string: host) else { return [] }
+        guard let base = OllamaHost.baseURL(host) else { return [] }
         var request = URLRequest(url: base.appendingPathComponent("api/tags"))
         request.timeoutInterval = 2
 

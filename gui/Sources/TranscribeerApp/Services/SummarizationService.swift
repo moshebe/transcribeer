@@ -188,7 +188,7 @@ enum SummarizationService {
     ///
     /// Returns the resolved model because Vertex AI requires a `google/` prefix
     /// that callers shouldn't have to remember.
-    private static func resolveProvider(
+    static func resolveProvider(
         _ backend: LLMBackend,
         model: String,
         ollamaHost: String,
@@ -209,18 +209,11 @@ enum SummarizationService {
             let resolvedModel = model.hasPrefix("google/") ? model : "google/\(model)"
             return (.other(url, apiKey: try GCloudAuth.accessToken()), resolvedModel)
         case .ollama:
-            return (.other(try ollamaBaseURL(ollamaHost), apiKey: nil), model)
+            guard let url = OllamaHost.baseURL(ollamaHost) else {
+                throw SummarizationError.invalidOllamaHost(ollamaHost)
+            }
+            return (.other(url, apiKey: nil), model)
         }
-    }
-
-    /// The LLM package appends `v1/chat/completions` to the base URL itself,
-    /// so the base must be the bare host. A `/v1` or trailing `/` that the
-    /// user typed is removed to prevent `/v1/v1/...` (HTTP 404).
-    static func ollamaBaseURL(_ host: String) throws -> URL {
-        var base = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        while base.hasSuffix("/") { base.removeLast() }
-        if base.hasSuffix("/v1") { base.removeLast(3) }
-        return try requireURL(base)
     }
 
     private static func requireURL(_ string: String) throws -> URL {
