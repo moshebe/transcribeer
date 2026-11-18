@@ -209,8 +209,18 @@ enum SummarizationService {
             let resolvedModel = model.hasPrefix("google/") ? model : "google/\(model)"
             return (.other(url, apiKey: try GCloudAuth.accessToken()), resolvedModel)
         case .ollama:
-            return (.other(try requireURL("\(ollamaHost)/v1"), apiKey: nil), model)
+            return (.other(try ollamaBaseURL(ollamaHost), apiKey: nil), model)
         }
+    }
+
+    /// The LLM package appends `v1/chat/completions` to the base URL itself,
+    /// so the base must be the bare host. A `/v1` or trailing `/` that the
+    /// user typed is removed to prevent `/v1/v1/...` (HTTP 404).
+    static func ollamaBaseURL(_ host: String) throws -> URL {
+        var base = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        if base.hasSuffix("/v1") { base.removeLast(3) }
+        return try requireURL(base)
     }
 
     private static func requireURL(_ string: String) throws -> URL {
