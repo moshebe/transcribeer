@@ -21,6 +21,17 @@ struct AppConfigTests {
         #expect(cfg.pipelineMode == "record+transcribe+summarize")
         #expect(!cfg.meetingAutoRecord)
         #expect(!cfg.promptOnStop) // default false — user opts in (Track 4.3)
+        #expect(cfg.keepScreenAwakeWhileRecording)
+    }
+
+    @Test("keep_screen_awake_while_recording decodes from [pipeline]")
+    func keepScreenAwakeDecodes() throws {
+        let toml = Data("""
+        [pipeline]
+        keep_screen_awake_while_recording = false
+        """.utf8)
+        let file = try TOMLDecoder().decode(TOMLFile.self, from: toml)
+        #expect(file.pipeline?.keep_screen_awake_while_recording == false)
     }
 
     @Test("TOML decoding reads transcription backend and cloud model fields")
