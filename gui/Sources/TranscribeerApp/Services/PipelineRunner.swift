@@ -31,7 +31,11 @@ struct SessionLogger {
 @Observable
 @MainActor
 final class PipelineRunner {
-    var state: AppState = .idle
+    var state: AppState = .idle {
+        didSet {
+            if !state.isRecording { displaySleepBlocker.release() }
+        }
+    }
     var currentSession: URL?
     var promptProfile: String?
 
@@ -130,6 +134,7 @@ final class PipelineRunner {
     private var titlePollTask: Task<Void, Never>?
     /// Start-time calendar match. Cancelled and awaited before the stop match.
     @ObservationIgnored var calendarStartTask: Task<Void, Never>?
+    @ObservationIgnored private let displaySleepBlocker = DisplaySleepBlocker()
 
     /// Append a timestamped line to the current session's `run.log`. No-op
     /// when no session is active. Used by the app layer to record events that
@@ -157,6 +162,9 @@ final class PipelineRunner {
         startTitlePolling(config: config)
         startCalendarMatch(for: session, startedAt: startTime, config: config)
         state = .recording(startTime: startTime)
+        if config.keepScreenAwakeWhileRecording {
+            displaySleepBlocker.acquire()
+        }
 
         recordingTask = Task {
             await runRecording(session: session, startedAt: startTime, config: config)

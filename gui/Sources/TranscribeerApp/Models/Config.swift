@@ -47,6 +47,9 @@ struct AppConfig: Equatable {
     /// Calendar titles to search. Empty = all calendars.
     var calendarNames: [String] = []
     var promptOnStop: Bool = false
+    /// Hold a power assertion while recording so the display (and the
+    /// system) does not idle-sleep mid-meeting.
+    var keepScreenAwakeWhileRecording: Bool = true
     /// Warn before summarizing recordings longer than this many minutes.
     /// 0 = disabled (Track 4.5).
     var longRecordingThresholdMinutes: Int = 30
@@ -149,6 +152,7 @@ struct PipelineSection: Decodable {
     var scheduled_transcription_enabled: Bool?
     var scheduled_transcription_hour: Int?
     var prompt_on_stop: Bool?
+    var keep_screen_awake_while_recording: Bool?
     var long_recording_threshold_minutes: Int?
     var open_app_hotkey: String?
 }
@@ -281,6 +285,8 @@ enum ConfigManager {
             cfg.openAppHotkey = hotkey
         }
         cfg.promptOnStop = s.prompt_on_stop ?? cfg.promptOnStop
+        cfg.keepScreenAwakeWhileRecording =
+            s.keep_screen_awake_while_recording ?? cfg.keepScreenAwakeWhileRecording
         if let threshold = s.long_recording_threshold_minutes, threshold >= 0 {
             cfg.longRecordingThresholdMinutes = threshold
         }
@@ -353,7 +359,6 @@ enum ConfigManager {
         let dir = path.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        let speakers = cfg.numSpeakers
         let autoRecordApps = cfg.meetingAutoRecordApps
             .sorted()
             .map(tomlString)
@@ -378,6 +383,7 @@ enum ConfigManager {
         scheduled_transcription_hour = \(cfg.scheduledTranscriptionHour)
         open_app_hotkey = \(tomlString(cfg.openAppHotkey))
         prompt_on_stop = \(cfg.promptOnStop)
+        keep_screen_awake_while_recording = \(cfg.keepScreenAwakeWhileRecording)
         long_recording_threshold_minutes = \(cfg.longRecordingThresholdMinutes)
 
         [transcription]
@@ -388,7 +394,7 @@ enum ConfigManager {
         openai_model = \(tomlString(cfg.openaiTranscriptionModel))
         gemini_model = \(tomlString(cfg.geminiTranscriptionModel))
         diarization = \(tomlString(cfg.diarization))
-        num_speakers = \(speakers)
+        num_speakers = \(cfg.numSpeakers)
         idle_unload_minutes = \(cfg.idleUnloadMinutes)
         disable_reduced_performance_mode = \(cfg.disableReducedPerformanceMode)
         hebrew_model = \(tomlString(cfg.hebrewWhisperModel))

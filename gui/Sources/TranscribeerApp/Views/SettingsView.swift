@@ -214,6 +214,19 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                Toggle("Keep screen awake while recording", isOn: Binding(
+                    get: { config.keepScreenAwakeWhileRecording },
+                    set: { config.keepScreenAwakeWhileRecording = $0; save() }
+                ))
+            } header: {
+                Text("Display")
+            } footer: {
+                Text("Stops the display and the Mac from going to sleep when idle during a recording. "
+                    + "Applies from the next recording.")
+                    .foregroundStyle(.secondary)
+            }
+
             // MARK: Long-recording confirmation (Track 4.5)
             Section {
                 Stepper(
