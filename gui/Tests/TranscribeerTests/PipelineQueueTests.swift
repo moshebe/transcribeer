@@ -88,6 +88,43 @@ struct PipelineQueueTests {
         #expect(runner.state == recording)
     }
 
+    // MARK: - Recording end
+
+    @Test("Ending capture clears the recording state")
+    func releaseClearsRecording() {
+        let runner = PipelineRunner()
+        runner.state = recording
+
+        runner.releaseRecordingState()
+
+        #expect(runner.state == .idle)
+    }
+
+    @Test("Ending capture lets deferred on-device work continue")
+    func releaseEndsWait() async {
+        let runner = PipelineRunner()
+        runner.state = recording
+
+        let waiter = Task { @MainActor in
+            await runner.waitForRecordingToEnd(if: true, logger: tempLogger())
+            return runner.state.isRecording
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        runner.releaseRecordingState()
+
+        #expect(await waiter.value == false)
+    }
+
+    @Test("Releasing leaves a non-recording state alone")
+    func releaseKeepsOtherStates() {
+        let runner = PipelineRunner()
+        runner.state = .awaitingPostRecordingChoice
+
+        runner.releaseRecordingState()
+
+        #expect(runner.state == .awaitingPostRecordingChoice)
+    }
+
     // MARK: - Queue contents
 
     private func job(_ session: URL, _ job: QueuedSession.Job, results: Box) -> QueuedSession {

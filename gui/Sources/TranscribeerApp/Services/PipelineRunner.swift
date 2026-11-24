@@ -230,6 +230,7 @@ final class PipelineRunner {
             audio: config.audio
         )
         stopParticipantsCapture()
+        releaseRecordingState()
 
         switch recordResult {
         case .permissionDenied(let detail):
@@ -238,7 +239,6 @@ final class PipelineRunner {
             reportCaptureFailure("capture failed: \(err)", userFacing: err, logger: logger)
         case .noAudio:
             logger.log("no audio captured")
-            state = isProcessingActive ? processingState : .idle
         case .recorded:
             let size = (try? FileManager.default.attributesOfItem(
                 atPath: audioPath.path
@@ -257,8 +257,8 @@ final class PipelineRunner {
     /// unanswered question never stalls the queue. Then queue the work.
     private func handOffRecording(_ session: URL, config: AppConfig, logger: SessionLogger) async {
         let plan = await recordingPlan(for: session, config: config, logger: logger)
-        // Hand the UI back to whatever is still processing, unless the next
-        // recording has already taken it.
+        // Clear a post-recording question, unless the next recording has
+        // already taken the UI.
         if !state.isRecording {
             state = isProcessingActive ? processingState : .idle
         }
@@ -414,6 +414,15 @@ final class PipelineRunner {
         logger.log(logMessage)
         setProcessingState(.error(userFacing))
         NotificationManager.notifyError(userFacing)
+    }
+
+    /// Called when capture ends. `state` still holds the recording that just
+    /// ended, and a new one can't start until it is cleared, so everything
+    /// that checks `state.isRecording` (Stop, on-device processing, the
+    /// post-recording prompts) would otherwise see a recording forever.
+    func releaseRecordingState() {
+        guard state.isRecording else { return }
+        state = isProcessingActive ? processingState : .idle
     }
 
     /// A capture failure ends the recording, so it owns `state` directly.
